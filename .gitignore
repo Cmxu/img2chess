@@ -176,7 +176,6 @@ processed_results/
 !docs/images/*.png
 input_images/
 output_squares/
-sample_chess_board.jpg
 extracted_board.jpg
 board_visualization.jpg
 square_grid.jpg
