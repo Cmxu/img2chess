@@ -180,3 +180,6 @@ extracted_board.jpg
 board_visualization.jpg
 square_grid.jpg
 example_*.jpg
+
+# Model files
+*.pth
