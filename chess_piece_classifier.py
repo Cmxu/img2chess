@@ -286,7 +286,7 @@ def visualize_samples(dataset, num_samples=8):
     
     plt.tight_layout()
     plt.savefig('chess_piece_samples.png', dpi=150, bbox_inches='tight')
-    plt.show()
+    # plt.show()  # Commented out to prevent freezing
 
 
 def main():
@@ -330,9 +330,6 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=num_workers)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=num_workers)
     
-    print("Visualizing sample data...")
-    visualize_samples(train_dataset)
-    
     # Create model
     print("Creating model...")
     model = ChessPieceClassifier(num_classes=13, freeze_backbone=True)
@@ -373,7 +370,7 @@ def main():
     
     plt.tight_layout()
     plt.savefig('training_curves.png', dpi=150, bbox_inches='tight')
-    plt.show()
+    # plt.show()  # Commented out to prevent freezing
 
 
 if __name__ == "__main__":
