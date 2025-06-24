@@ -1,0 +1,27 @@
+BATCH ANALYSIS SUMMARY
+==================================================
+
+Total images: 3
+Successful: 1
+Failed: 2
+
+SUCCESSFUL ANALYSES:
+------------------------------
+sample_chess_frame.jpg:
+  Pieces detected: 24
+  Avg confidence: 0.998
+  Position: 8 | R · · Q K R · ·
+7 | · P · B · P · P
+6 | P · N · P · · ·
+5 | · · · · · · · ·
+4 | · · · · P q · ·
+3 | · · p · n · · ·
+2 | p p · · · p p p
+1 | · r · · k · n r
+  +------------------
+    a b c d e f g h
+
+FAILED ANALYSES:
+--------------------
+chess_piece_samples.png: No chess board detected in the image
+training_curves.png: No chess board detected in the image

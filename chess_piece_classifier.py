@@ -159,7 +159,36 @@ class ChessPieceDataset(Dataset):
             enhancer = ImageEnhance.Color(image)
             image = enhancer.enhance(random.uniform(0.8, 1.2))
         
+        # Random erasing to help with numbers/letters on squares
+        if random.random() < 0.3:  # 30% chance of applying random erasing
+            image = self._apply_random_erasing(image)
+        
         return image
+    
+    def _apply_random_erasing(self, image: Image.Image) -> Image.Image:
+        """Apply random erasing by masking out rectangular regions."""
+        # Convert to numpy for easier manipulation
+        img_array = np.array(image)
+        
+        # Apply 1-3 random erasing patches
+        num_patches = random.randint(1, 3)
+        
+        for _ in range(num_patches):
+            # Random patch size (10-30% of image size)
+            patch_size_w = random.randint(int(self.image_size * 0.1), int(self.image_size * 0.3))
+            patch_size_h = random.randint(int(self.image_size * 0.1), int(self.image_size * 0.3))
+            
+            # Random position
+            x = random.randint(0, self.image_size - patch_size_w)
+            y = random.randint(0, self.image_size - patch_size_h)
+            
+            # Random fill value (gray to white range)
+            fill_value = random.randint(200, 255)
+            
+            # Apply the patch
+            img_array[y:y+patch_size_h, x:x+patch_size_w] = fill_value
+        
+        return Image.fromarray(img_array)
 
 
 class ChessPieceClassifier(nn.Module):
@@ -327,12 +356,12 @@ def main():
     
     # Create data loaders (reduce workers for MPS compatibility)
     num_workers = 0 if device.type == 'mps' else 2
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=num_workers)
     
     # Create model
     print("Creating model...")
-    model = ChessPieceClassifier(num_classes=13, freeze_backbone=True)
+    model = ChessPieceClassifier(num_classes=13, freeze_backbone=False)
     
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters")
     

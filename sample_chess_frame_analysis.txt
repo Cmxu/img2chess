@@ -1,0 +1,80 @@
+CHESS POSITION ANALYSIS
+==================================================
+
+Position:
+8 | R · · Q K R · ·
+7 | · P · B · P · P
+6 | P · N · P · · ·
+5 | · · · · · · · ·
+4 | · · · · P q · ·
+3 | · · p · n · · ·
+2 | p p · · · p p p
+1 | · r · · k · n r
+  +------------------
+    a b c d e f g h
+
+Detailed Predictions:
+a1: empty (confidence: 0.988)
+a2: wp (confidence: 1.000)
+a3: empty (confidence: 0.999)
+a4: empty (confidence: 0.958)
+a5: empty (confidence: 1.000)
+a6: bp (confidence: 1.000)
+a7: empty (confidence: 0.993)
+a8: br (confidence: 1.000)
+b1: wr (confidence: 1.000)
+b2: wp (confidence: 0.980)
+b3: empty (confidence: 1.000)
+b4: empty (confidence: 1.000)
+b5: empty (confidence: 1.000)
+b6: empty (confidence: 1.000)
+b7: bp (confidence: 1.000)
+b8: empty (confidence: 1.000)
+c1: empty (confidence: 0.998)
+c2: empty (confidence: 1.000)
+c3: wp (confidence: 0.999)
+c4: empty (confidence: 1.000)
+c5: empty (confidence: 1.000)
+c6: bn (confidence: 1.000)
+c7: empty (confidence: 1.000)
+c8: empty (confidence: 1.000)
+d1: empty (confidence: 0.990)
+d2: empty (confidence: 1.000)
+d3: empty (confidence: 1.000)
+d4: empty (confidence: 1.000)
+d5: empty (confidence: 1.000)
+d6: empty (confidence: 1.000)
+d7: bb (confidence: 1.000)
+d8: bq (confidence: 1.000)
+e1: wk (confidence: 0.997)
+e2: empty (confidence: 1.000)
+e3: wn (confidence: 1.000)
+e4: bp (confidence: 1.000)
+e5: empty (confidence: 1.000)
+e6: bp (confidence: 1.000)
+e7: empty (confidence: 1.000)
+e8: bk (confidence: 1.000)
+f1: empty (confidence: 0.999)
+f2: wp (confidence: 0.999)
+f3: empty (confidence: 0.999)
+f4: wq (confidence: 0.987)
+f5: empty (confidence: 1.000)
+f6: empty (confidence: 1.000)
+f7: bp (confidence: 1.000)
+f8: br (confidence: 1.000)
+g1: wn (confidence: 0.997)
+g2: wp (confidence: 1.000)
+g3: empty (confidence: 1.000)
+g4: empty (confidence: 1.000)
+g5: empty (confidence: 1.000)
+g6: empty (confidence: 1.000)
+g7: empty (confidence: 1.000)
+g8: empty (confidence: 1.000)
+h1: wr (confidence: 1.000)
+h2: wp (confidence: 0.999)
+h3: empty (confidence: 1.000)
+h4: empty (confidence: 1.000)
+h5: empty (confidence: 1.000)
+h6: empty (confidence: 1.000)
+h7: bp (confidence: 1.000)
+h8: empty (confidence: 1.000)
