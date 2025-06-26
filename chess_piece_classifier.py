@@ -233,6 +233,87 @@ class ChessPieceClassifier(nn.Module):
         logits = self.classifier(features)
         
         return logits
+    
+    def classify_piece(self, square_image: np.ndarray) -> str:
+        """
+        Classify a single chess piece from a square image.
+        
+        Args:
+            square_image: numpy array representing the square image
+            
+        Returns:
+            String representation of the piece (e.g., 'wp', 'bk', 'empty')
+        """
+        device = torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Convert numpy array to PIL Image
+        from PIL import Image
+        if square_image.dtype != np.uint8:
+            square_image = (square_image * 255).astype(np.uint8)
+        
+        image = Image.fromarray(square_image)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Resize to expected input size (224x224 for DINOv2)
+        image = image.resize((224, 224), Image.Resampling.LANCZOS)
+        
+        # Get feature extractor
+        from transformers import AutoImageProcessor
+        feature_extractor = AutoImageProcessor.from_pretrained("facebook/dinov2-base", use_fast=True)
+        
+        # Preprocess
+        inputs = feature_extractor(images=image, return_tensors="pt")
+        pixel_values = inputs["pixel_values"].to(device)
+        
+        # Set model to evaluation mode
+        self.eval()
+        self = self.to(device)
+        
+        # Get prediction
+        with torch.no_grad():
+            outputs = self(pixel_values)
+            _, predicted = torch.max(outputs, 1)
+            predicted_idx = predicted.item()
+        
+        # Map back to class name
+        classes = [
+            'empty',  # 0
+            'wp', 'wr', 'wn', 'wb', 'wq', 'wk',  # 1-6: white pieces
+            'bp', 'br', 'bn', 'bb', 'bq', 'bk'   # 7-12: black pieces
+        ]
+        
+        return classes[predicted_idx]
+
+
+def load_trained_model(model_path: str = "chess_piece_classifier.pth") -> ChessPieceClassifier:
+    """
+    Load a trained chess piece classifier model.
+    
+    Args:
+        model_path: Path to the saved model checkpoint
+        
+    Returns:
+        Loaded ChessPieceClassifier model
+    """
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Create model
+    model = ChessPieceClassifier(num_classes=13, freeze_backbone=True)  # Usually freeze during inference
+    
+    # Load state dict
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Move to device and set to eval mode
+    model = model.to(device)
+    model.eval()
+    
+    print(f"✅ Loaded trained chess piece classifier from {model_path}")
+    
+    return model
 
 
 def train_model(model, train_loader, val_loader, num_epochs=10, device='cuda'):
