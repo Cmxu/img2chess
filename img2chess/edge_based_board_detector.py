@@ -324,16 +324,17 @@ class EdgeBasedChessBoardDetector:
         # Step 15: Validate corner geometry
         corner_validation = self._validate_corner_geometry(corners, valid_square_side_length)
         log['steps'].append({'step': 15, 'name': 'Validate corner geometry', 'status': 'completed',
-                           'corner_validation': corner_validation})
+                           'corner_validation': corner_validation, 'violation_count': corner_validation['violation_count']})
         log['stats']['corner_validation'] = corner_validation
+        log['stats']['geometry_violation_count'] = corner_validation['violation_count']
         
         # Log violations if any
         if corner_validation['has_violations']:
-            logger.warning(f"Corner geometry violations detected:")
+            logger.warning(f"Corner geometry violations detected ({corner_validation['violation_count']} violations):")
             for violation in corner_validation['violations']:
                 logger.warning(f"  {violation}")
         else:
-            logger.info("Corner geometry validation passed - board forms proper square")
+            logger.info(f"Corner geometry validation passed - board forms proper square (0 violations)")
             
         if self.debug_mode:
             corner_img = image.copy()
@@ -418,7 +419,7 @@ class EdgeBasedChessBoardDetector:
                 # Multiple candidates, evaluate which has better spacing
                 candidates = [i] + close_indices
                 best_index = self._evaluate_line_spacing_quality(
-                    lines[candidates], coords_array[candidates], direction, square_side_length, coords_array
+                    coords_array[candidates], square_side_length, coords_array
                 )
                 
                 # Keep the best line and mark others as used
@@ -429,8 +430,8 @@ class EdgeBasedChessBoardDetector:
         logger.info(f"Smart duplicate removal ({direction}): {len(lines)} -> {len(unique_lines)} lines")
         return np.array(unique_lines)
     
-    def _evaluate_line_spacing_quality(self, candidate_lines: np.ndarray, candidate_coords: np.ndarray, 
-                                     direction: str, square_side_length: float, all_coords: np.ndarray) -> int:
+    def _evaluate_line_spacing_quality(self, candidate_coords: np.ndarray, 
+                                     square_side_length: float, all_coords: np.ndarray) -> int:
         """Evaluate which line has the best spacing alignment with expected chess square pattern."""
         best_score = float('inf')
         best_index = 0
@@ -552,7 +553,7 @@ class EdgeBasedChessBoardDetector:
             'diagonal_difference_percent': float(diag_error_percent),
             'corner_angles': [float(a) for a in corner_angles],
             'has_violations': len(violations) > 0,
-            'violation_count': len(violations),
+            'violation_count': 1 if len(violations) > 0 else 0,  # Binary: 0 or 1
             'violations': violations,
             'max_side_error_percent': float(max(side_errors)) if side_errors else 0.0
         }
