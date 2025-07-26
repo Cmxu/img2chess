@@ -8,6 +8,7 @@ This library provides functionality to:
 """
 
 from .board_detector import ChessBoardDetector
+from .edge_based_board_detector import EdgeBasedChessBoardDetector
 from .square_extractor import SquareExtractor
 from .utils import visualize_board, save_squares
 
@@ -17,6 +18,7 @@ __email__ = ""
 
 __all__ = [
     "ChessBoardDetector",
+    "EdgeBasedChessBoardDetector",
     "SquareExtractor", 
     "visualize_board",
     "save_squares"

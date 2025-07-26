@@ -201,7 +201,7 @@ class ChessBoardDetector:
                             if self._validate_board_corners_lenient(corners):
                                 # Score this candidate instead of binary validation
                                 score = self._score_chess_candidate(gray, corners)
-                                if score > 50:  # Only accept high-scoring candidates
+                                if score > 30:  # More lenient acceptance threshold
                                     logger.info(f"Board detected using contour method with score {score:.1f}")
                                     return self._order_corners(corners)
             except Exception as e:

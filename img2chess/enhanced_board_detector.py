@@ -304,7 +304,7 @@ class EnhancedChessBoardDetector(ChessBoardDetector):
                 completeness_score = self._score_board_completeness(warped)
                 
                 # REJECT candidates with very low completeness scores (likely partial boards)
-                if completeness_score < 30:  # Minimum threshold for complete boards
+                if completeness_score < 10:  # Much more lenient threshold for complete boards
                     logger.debug(f"Rejecting {method} due to low completeness score: {completeness_score:.1f}")
                     continue
                 
@@ -405,7 +405,7 @@ class EnhancedChessBoardDetector(ChessBoardDetector):
             h, w = board.shape
             cell_h, cell_w = h // 8, w // 8
             
-            if cell_h < 8 or cell_w < 8:  # Much stricter minimum size
+            if cell_h < 3 or cell_w < 3:  # More reasonable minimum size
                 return 0.0  # Too small to be a complete board
             
             # Check that we can identify 8x8 distinct regions
@@ -427,7 +427,7 @@ class EnhancedChessBoardDetector(ChessBoardDetector):
                             
                             # Check if this cell has piece-like content (high variance + reasonable brightness)
                             cell_mean = np.mean(cell)
-                            if cell_var > 100 and 50 < cell_mean < 200:  # Likely has a piece
+                            if cell_var > 50 and 30 < cell_mean < 220:  # More lenient piece detection
                                 piece_like_cells += 1
             
             # Complete boards should have all 64 cells visible
@@ -440,7 +440,7 @@ class EnhancedChessBoardDetector(ChessBoardDetector):
                 variance_score = 0
             
             # CRITICAL: Must have reasonable number of pieces visible
-            piece_score = min(7, piece_like_cells / 3)  # Up to 7 points for piece presence
+            piece_score = min(7, piece_like_cells / 2)  # Up to 7 points for piece presence, more lenient
                 
             return cell_completeness + variance_score + piece_score
             

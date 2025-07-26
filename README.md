@@ -79,6 +79,7 @@ board_image = detector.detect_board(image)
 **Detection Methods:**
 - **Corner Detection**: Uses `cv2.findChessboardCorners()` to detect internal grid corners
 - **Contour Analysis**: Finds board boundaries using contour detection and polygon approximation
+- **Edge-Based Detection**: Uses edge detection and line filtering to identify chess board grid lines
 - **Geometric Validation**: Validates detected regions based on area, aspect ratio, and shape
 
 ### SquareExtractor
@@ -184,8 +185,9 @@ For best results, input images should:
 1. **Preprocessing**: Convert to grayscale, apply noise reduction
 2. **Corner Detection**: Attempt to find chessboard pattern using OpenCV
 3. **Contour Detection**: Fallback method using edge detection and polygon approximation
-4. **Validation**: Check area, aspect ratio, and geometric properties
-5. **Perspective Correction**: Apply homography transformation to get square board
+4. **Edge-Based Detection**: Alternative method using line filtering techniques
+5. **Validation**: Check area, aspect ratio, and geometric properties
+6. **Perspective Correction**: Apply homography transformation to get square board
 
 ### Square Extraction
 
