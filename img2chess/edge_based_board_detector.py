@@ -136,13 +136,14 @@ class EdgeBasedChessBoardDetector:
             log['stats']['distance_range'] = {'min': float(min(all_distances)), 'max': float(max(all_distances))}
         
         # Step 8: Find frequent distances (using mode instead of mean, pixels instead of percentage)
-        frequent_distances, distance_analysis, all_distance_groups = self._find_frequent_distances(all_distances, tolerance_pixels=2.0, min_instances=15)
+        min_instances = 12
+        frequent_distances, distance_analysis, all_distance_groups = self._find_frequent_distances(all_distances, tolerance_pixels=2.75, min_instances=min_instances)
         
         if not frequent_distances:
-            log['failure_reason'] = 'No frequent distances found with 20+ instances'
+            log['failure_reason'] = f'No frequent distances found with {min_instances}+ instances'
             log['steps'].append({'step': 8, 'name': 'Find frequent distances', 'status': 'failed', 
                                'frequent_distances': 0, 'distance_analysis': distance_analysis})
-            logger.warning("No frequent distances found with 20+ instances")
+            logger.warning(f"No frequent distances found with {min_instances}+ instances")
             return (None, log) if return_log else None
         
         log['steps'].append({'step': 8, 'name': 'Find frequent distances', 'status': 'completed', 
@@ -156,7 +157,7 @@ class EdgeBasedChessBoardDetector:
         
         # Find all valid candidates
         for candidate_distance in frequent_distances:
-            if self._validate_distance_multiples(all_distances, candidate_distance, tolerance_pixels=3.0):
+            if self._validate_distance_multiples(all_distances, candidate_distance, tolerance_pixels=2.0):
                 valid_candidates.append(candidate_distance)
         
         # Prefer larger distances (more reasonable for chess squares)
@@ -181,9 +182,9 @@ class EdgeBasedChessBoardDetector:
         
         # Step 10: Select lines matching chess square pattern (completely changed)
         selected_vertical_lines, vertical_line_details = self._select_lines_matching_pattern(
-            vertical_lines, 'vertical', valid_square_side_length, tolerance_pixels=2.0)
+            vertical_lines, 'vertical', valid_square_side_length, tolerance_pixels=1.0)
         selected_horizontal_lines, horizontal_line_details = self._select_lines_matching_pattern(
-            horizontal_lines, 'horizontal', valid_square_side_length, tolerance_pixels=2.0)
+            horizontal_lines, 'horizontal', valid_square_side_length, tolerance_pixels=1.0)
         
         # Log final selection summary
         logger.info(f"\nFinal selection:")
@@ -229,7 +230,7 @@ class EdgeBasedChessBoardDetector:
                 
                 # Filter both directions by boundaries
                 selected_horizontal_lines, selected_vertical_lines = self._filter_lines_by_boundaries(
-                    selected_horizontal_lines, selected_vertical_lines, buffer_pixels=200)
+                    selected_horizontal_lines, selected_vertical_lines, buffer_pixels=50)
                 
                 filtered_h_this_iter = prev_h_count - len(selected_horizontal_lines)
                 filtered_v_this_iter = prev_v_count - len(selected_vertical_lines)
@@ -310,6 +311,15 @@ class EdgeBasedChessBoardDetector:
         log['steps'].append({'step': 13, 'name': 'Final validation', 'status': 'completed',
                            'final_vertical': len(selected_vertical_lines), 'final_horizontal': len(selected_horizontal_lines)})
         
+        # # Step 13.5: Intelligently trim lines to exactly 9 lines each direction if we have more
+        # if len(selected_vertical_lines) > 9 or len(selected_horizontal_lines) > 9:
+        #     logger.info(f"Detected oversized grid: {len(selected_vertical_lines)}V x {len(selected_horizontal_lines)}H lines")
+        #     selected_vertical_lines = self._trim_lines_to_8x8_grid(selected_vertical_lines, 'vertical', valid_square_side_length)
+        #     selected_horizontal_lines = self._trim_lines_to_8x8_grid(selected_horizontal_lines, 'horizontal', valid_square_side_length)
+        #     log['steps'].append({'step': 13.5, 'name': 'Trim to 8x8 grid', 'status': 'completed',
+        #                        'trimmed_vertical': len(selected_vertical_lines), 'trimmed_horizontal': len(selected_horizontal_lines)})
+        #     logger.info(f"Trimmed to: {len(selected_vertical_lines)}V x {len(selected_horizontal_lines)}H lines")
+
         # Calculate board corners from line intersections
         corners = self._calculate_board_corners(selected_vertical_lines, selected_horizontal_lines)
         if corners is None:
@@ -320,6 +330,16 @@ class EdgeBasedChessBoardDetector:
         
         log['steps'].append({'step': 14, 'name': 'Calculate corners', 'status': 'completed'})
         log['stats']['corners'] = corners.tolist()
+        
+        # Step 14.5: Adjust corners if board is not exactly 8x8
+        adjusted_corners = self._adjust_corners_for_8x8(corners, selected_vertical_lines, selected_horizontal_lines, valid_square_side_length)
+        if adjusted_corners is not None:
+            corners = adjusted_corners
+            log['steps'].append({'step': 14.5, 'name': 'Adjust corners to 8x8', 'status': 'completed'})
+            log['stats']['adjusted_corners'] = corners.tolist()
+            logger.info("Corners adjusted for optimal 8x8 board extraction")
+        else:
+            log['steps'].append({'step': 14.5, 'name': 'Adjust corners to 8x8', 'status': 'skipped'})
         
         # Step 15: Validate corner geometry
         corner_validation = self._validate_corner_geometry(corners, valid_square_side_length)
@@ -342,20 +362,55 @@ class EdgeBasedChessBoardDetector:
                 cv2.circle(corner_img, tuple(point.astype(int)), 5, (0, 0, 255), -1)
             cv2.imwrite(os.path.join(self.debug_output_dir, frame_name, "08_board_corners.jpg"), corner_img)
         
-        # Extract and return the board
-        board = self._extract_board(image, corners)
+        # Step 15.5: Try to fix violations using iterative board adjustment
+        adjusted_corners = corners
+        if corner_validation['has_violations']:
+            logger.info("Attempting to fix corner violations using iterative board adjustment...")
+            
+            # Try iterative adjustment on the original image with current corners
+            adjusted_corners_result = self._iterative_board_adjustment_with_corners(
+                image, corners, valid_square_side_length
+            )
+            
+            if adjusted_corners_result is not None:
+                logger.info("Board adjustment successful - new corners calculated")
+                
+                # Re-validate the adjusted corners
+                adjusted_validation = self._validate_corner_geometry(adjusted_corners_result, valid_square_side_length)
+                
+                if adjusted_validation['violation_count'] < corner_validation['violation_count']:
+                    logger.info(f"Adjustment reduced violations: {corner_validation['violation_count']} -> {adjusted_validation['violation_count']}")
+                    adjusted_corners = adjusted_corners_result
+                    log['steps'].append({'step': 15.5, 'name': 'Fix violations with iterative adjustment', 'status': 'completed',
+                                       'original_violations': corner_validation['violation_count'],
+                                       'adjusted_violations': adjusted_validation['violation_count']})
+                    # Update the validation info
+                    log['stats']['corner_validation_after_adjustment'] = adjusted_validation
+                    log['stats']['geometry_violation_count'] = adjusted_validation['violation_count']
+                else:
+                    logger.info(f"Adjustment did not improve violations: {corner_validation['violation_count']} -> {adjusted_validation['violation_count']}")
+                    log['steps'].append({'step': 15.5, 'name': 'Fix violations with iterative adjustment', 'status': 'no_improvement'})
+            else:
+                logger.info("No board adjustment needed")
+                log['steps'].append({'step': 15.5, 'name': 'Fix violations with iterative adjustment', 'status': 'skipped'})
+        else:
+            log['steps'].append({'step': 15.5, 'name': 'Fix violations with iterative adjustment', 'status': 'skipped'})
+        
+        # Extract and return the board using final corners
+        board = self._extract_board(image, adjusted_corners)
         log['steps'].append({'step': 16, 'name': 'Extract board', 'status': 'completed'})
         log['success'] = True
         log['stats']['output_board_shape'] = board.shape
+        log['stats']['final_corners'] = adjusted_corners.tolist()
         
         return (board, log) if return_log else board
 
     def _detect_edges(self, gray: np.ndarray) -> np.ndarray:
         """Apply Canny edge detection with adaptive parameters."""
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
         median = np.median(blurred)
-        lower = int(max(0, 0.7 * median))
-        upper = int(min(255, 1.3 * median))
+        lower = int(max(0, 0.5 * median))
+        upper = int(min(255, 0.9 * median))
         edges = cv2.Canny(blurred, lower, upper, apertureSize=3)
         return edges
 
@@ -366,7 +421,7 @@ class EdgeBasedChessBoardDetector:
         param_sets = [
             # {'threshold': 50, 'minLineLength': 30, 'maxLineGap': 10},
             # {'threshold': 80, 'minLineLength': 50, 'maxLineGap': 15},
-            {'threshold': 100, 'minLineLength': 90, 'maxLineGap': 20},
+            {'threshold': 200, 'minLineLength': 140, 'maxLineGap': 50},
         ]
         
         for params in param_sets:
@@ -598,8 +653,12 @@ class EdgeBasedChessBoardDetector:
             max_dist = max(all_distances)
             logger.info(f"Distance range: {min_dist:.1f} - {max_dist:.1f}")
             
+            # Create sorted list of all distances
+            sorted_distances = sorted(all_distances)
+            
             distance_details.update({
-                'distance_range': {'min': float(min_dist), 'max': float(max_dist)}
+                'distance_range': {'min': float(min_dist), 'max': float(max_dist)},
+                'all_distances_sorted': [float(d) for d in sorted_distances]
             })
             
             # Generate histogram if matplotlib is available and debug mode is on
@@ -715,8 +774,8 @@ class EdgeBasedChessBoardDetector:
         all_groups_with_freq = [(len(group), np.mean(group)) for group in distance_groups]
         all_groups_with_freq.sort(reverse=True)  # Sort by frequency (descending)
         
-        logger.info(f"\nTop 20 distance groups (by frequency):")
-        for i, (freq, mean_dist) in enumerate(all_groups_with_freq[:20]):
+        logger.info(f"\nTop 10 distance groups (by frequency):")
+        for i, (freq, mean_dist) in enumerate(all_groups_with_freq[:10]):
             marker = " *** SELECTED ***" if freq >= min_instances else ""
             logger.info(f"{i+1:2d}. Distance: {mean_dist:6.1f} px, Frequency: {freq:3d}{marker}")
         
@@ -735,7 +794,7 @@ class EdgeBasedChessBoardDetector:
             'min_instances': min_instances,
             'tolerance_pixels': tolerance_pixels,
             'top_groups': [{'distance': float(mean_dist), 'frequency': freq, 'selected': freq >= min_instances} 
-                          for freq, mean_dist in all_groups_with_freq[:20]],
+                          for freq, mean_dist in all_groups_with_freq[:10]],
             'frequent_distances': [{'distance': float(distance), 'instances': len(group)} 
                                   for distance, group in zip(frequent_distances, frequent_groups)]
         }
@@ -756,7 +815,7 @@ class EdgeBasedChessBoardDetector:
         
         return found_multiples >= 2
 
-    def _select_lines_matching_pattern(self, lines: np.ndarray, direction: str, square_side_length: float, tolerance_pixels: float = 1.0) -> tuple:
+    def _select_lines_matching_pattern(self, lines: np.ndarray, direction: str, square_side_length: float, tolerance_pixels: float = 1.0, tolerance_multiplier: float = 1.0) -> tuple:
         """Select lines that match the chess square spacing pattern."""
         if len(lines) == 0 or square_side_length is None:
             return np.array([]), []
@@ -783,6 +842,7 @@ class EdgeBasedChessBoardDetector:
             distances = np.abs(sorted_coords - coord)
             
             # Count how many distances match multiples of square_side_length
+            small_matching_distances = 0
             matching_distances = 0
             
             for distance in distances:
@@ -793,22 +853,27 @@ class EdgeBasedChessBoardDetector:
                 multiple = round(distance / square_side_length)
                 expected_distance = multiple * square_side_length
                 
-                if multiple > 0 and abs(distance - expected_distance) <= tolerance_pixels:
+                if multiple > 0 and abs(distance - expected_distance) <= multiple * tolerance_multiplier * tolerance_pixels:
                     matching_distances += 1
+                    if multiple <= 3:
+                        small_matching_distances += 1
             
             # Create line detail record
+            selected = matching_distances >= 3 and small_matching_distances >= 1
             line_detail = {
                 'coordinate': float(coord),
-                'matching_distances': matching_distances,
-                'selected': matching_distances >= 4
+                'matching_distances': matching_distances,   
+                'small_matching_distances': small_matching_distances,
+                'selected': selected
             }
             line_details.append(line_detail)
             
             # If line has at least 4 matching distances, select it
-            if matching_distances >= 4:
+            if selected:
                 selected_lines.append(line)
                 logger.info(f"  Line {len(selected_lines)}: {coord:.1f} px ({matching_distances} matching distances)")
             else:
+                #print(matching_distances, small_matching_distances, multiple)
                 logger.info(f"  Line rejected: {coord:.1f} px (only {matching_distances} matching distances)")
         
         logger.info(f"  Selected {len(selected_lines)} out of {len(lines)} {direction} lines")
@@ -924,3 +989,703 @@ class EdgeBasedChessBoardDetector:
         board = cv2.warpPerspective(image, matrix, (board_size, board_size))
         
         return board
+
+    def _adjust_corners_for_8x8(self, corners: np.ndarray, vertical_lines: np.ndarray, horizontal_lines: np.ndarray, square_side_length: float) -> Optional[np.ndarray]:
+        """
+        Adjust corners to ensure exactly 8x8 board extraction by analyzing line positions
+        and selecting the optimal 8-square span in each direction.
+        
+        Args:
+            corners: Original corners [top_left, top_right, bottom_right, bottom_left]
+            vertical_lines: Array of vertical lines
+            horizontal_lines: Array of horizontal lines
+            square_side_length: Expected distance between adjacent lines
+            
+        Returns:
+            Adjusted corners or None if no adjustment needed/possible
+        """
+        if len(vertical_lines) <= 9 and len(horizontal_lines) <= 9:
+            # No adjustment needed if we already have 9 or fewer lines
+            return None
+        
+        logger.info(f"Adjusting corners: {len(vertical_lines)} vertical, {len(horizontal_lines)} horizontal lines")
+        
+        # Get current corner coordinates for reference
+        top_left, top_right, bottom_right, bottom_left = corners
+        
+        # Adjust vertical boundaries (left and right edges)
+        adjusted_left_x, adjusted_right_x = self._find_optimal_boundary_pair(
+            vertical_lines, 'vertical', square_side_length, target_span_squares=8
+        )
+        
+        # Adjust horizontal boundaries (top and bottom edges)  
+        adjusted_top_y, adjusted_bottom_y = self._find_optimal_boundary_pair(
+            horizontal_lines, 'horizontal', square_side_length, target_span_squares=8
+        )
+        
+        # If no adjustments were made, return None
+        if (adjusted_left_x is None or adjusted_right_x is None or 
+            adjusted_top_y is None or adjusted_bottom_y is None):
+            return None
+        
+        # Create new corners with adjusted boundaries
+        new_corners = np.array([
+            [adjusted_left_x, adjusted_top_y],      # top_left
+            [adjusted_right_x, adjusted_top_y],     # top_right  
+            [adjusted_right_x, adjusted_bottom_y],  # bottom_right
+            [adjusted_left_x, adjusted_bottom_y]    # bottom_left
+        ], dtype=np.float32)
+        
+        # Log the adjustment
+        original_width = abs(top_right[0] - top_left[0])
+        original_height = abs(bottom_left[1] - top_left[1])
+        new_width = abs(adjusted_right_x - adjusted_left_x)
+        new_height = abs(adjusted_bottom_y - adjusted_top_y)
+        
+        logger.info(f"Corner adjustment: {original_width:.1f}x{original_height:.1f} → {new_width:.1f}x{new_height:.1f} pixels")
+        
+        return new_corners
+
+    def _find_optimal_boundary_pair(self, lines: np.ndarray, direction: str, square_side_length: float, target_span_squares: int = 8) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Find the optimal pair of boundary lines that span exactly the target number of squares.
+        
+        Args:
+            lines: Array of lines in one direction
+            direction: 'vertical' or 'horizontal'
+            square_side_length: Expected distance between adjacent lines
+            target_span_squares: Target number of squares to span (8 for chess)
+            
+        Returns:
+            Tuple of (start_boundary, end_boundary) coordinates or (None, None) if no good pair found
+        """
+        if len(lines) <= target_span_squares + 1:
+            # Not enough lines to make adjustments
+            return None, None
+        
+        # Extract coordinates
+        if direction == 'vertical':
+            coords = [(line[0] + line[2]) / 2 for line in lines]
+        else:
+            coords = [(line[1] + line[3]) / 2 for line in lines]
+        
+        sorted_coords = sorted(coords)
+        target_span = target_span_squares * square_side_length
+        
+        best_start = None
+        best_end = None
+        best_score = float('inf')
+        
+        # Try all possible pairs that could span the target number of squares
+        for i in range(len(sorted_coords)):
+            for j in range(i + target_span_squares, min(i + target_span_squares + 3, len(sorted_coords))):
+                actual_span = sorted_coords[j] - sorted_coords[i]
+                span_error = abs(actual_span - target_span)
+                
+                # Calculate how evenly spaced the intermediate lines are
+                if j - i > 1:
+                    intermediate_coords = sorted_coords[i:j+1]
+                    expected_spacing = actual_span / (len(intermediate_coords) - 1)
+                    spacing_errors = []
+                    for k in range(len(intermediate_coords) - 1):
+                        actual_spacing = intermediate_coords[k+1] - intermediate_coords[k]
+                        spacing_errors.append(abs(actual_spacing - expected_spacing))
+                    avg_spacing_error = np.mean(spacing_errors) if spacing_errors else 0
+                else:
+                    avg_spacing_error = 0
+                
+                # Combined score: span accuracy + spacing regularity
+                total_score = span_error + avg_spacing_error * 0.5
+                
+                if total_score < best_score:
+                    best_score = total_score
+                    best_start = sorted_coords[i]
+                    best_end = sorted_coords[j]
+        
+        if best_start is not None and best_end is not None:
+            logger.info(f"Optimal {direction} span: {best_start:.1f} to {best_end:.1f} "
+                       f"(span: {best_end - best_start:.1f}px, target: {target_span:.1f}px, error: {best_score:.1f})")
+        
+        return best_start, best_end
+
+    def _iterative_board_adjustment_with_corners(self, image: np.ndarray, corners: np.ndarray, square_side_length: float) -> Optional[np.ndarray]:
+        """
+        Adjust corners to fix violations by analyzing the board region in the original image
+        and iteratively growing or shrinking to achieve exactly 8x8 squares.
+        
+        Args:
+            image: Original image
+            corners: Current corners [top_left, top_right, bottom_right, bottom_left]
+            square_side_length: Expected distance between adjacent lines
+            
+        Returns:
+            Adjusted corners or None if no adjustment needed/possible
+        """
+        # Calculate current board dimensions
+        top_left, top_right, bottom_right, bottom_left = corners
+        current_width = np.mean([
+            np.linalg.norm(top_right - top_left),
+            np.linalg.norm(bottom_right - bottom_left)
+        ])
+        current_height = np.mean([
+            np.linalg.norm(bottom_left - top_left), 
+            np.linalg.norm(bottom_right - top_right)
+        ])
+        
+        # Calculate how many squares we have in each direction
+        cols_in_squares = current_width / square_side_length
+        rows_in_squares = current_height / square_side_length
+        
+        # Check if dimensions are close to integer multiples
+        col_squares_int = round(cols_in_squares)
+        row_squares_int = round(rows_in_squares)
+        
+        col_error = abs(cols_in_squares - col_squares_int)
+        row_error = abs(rows_in_squares - row_squares_int)
+        
+        # Only proceed if we're very close to integer multiples (within 25% tolerance)
+        tolerance = 0.25
+        if row_error > tolerance or col_error > tolerance:
+            logger.info(f"Board dimensions not close to integer multiples: {cols_in_squares:.2f}x{rows_in_squares:.2f}")
+            return None
+            
+        # If already 8x8, no adjustment needed
+        if col_squares_int == 8 and row_squares_int == 8:
+            logger.info("Board is already 8x8 squares")
+            return None
+        
+        logger.info(f"Current board: {current_width:.1f}x{current_height:.1f} pixels = {col_squares_int}x{row_squares_int} squares")
+        logger.info(f"Target: {8*square_side_length:.1f}x{8*square_side_length:.1f} pixels = 8x8 squares")
+        
+        # Calculate target dimensions
+        target_width = 8 * square_side_length
+        target_height = 8 * square_side_length
+        
+        # Adjust corners iteratively
+        adjusted_corners = corners.copy()
+        
+        # Adjust width
+        if col_squares_int != 8:
+            adjusted_corners = self._adjust_corners_dimension(
+                image, adjusted_corners, 'width', col_squares_int, 8, square_side_length
+            )
+        
+        # Adjust height  
+        if row_squares_int != 8:
+            adjusted_corners = self._adjust_corners_dimension(
+                image, adjusted_corners, 'height', row_squares_int, 8, square_side_length
+            )
+        
+        # Check if corners actually changed
+        if np.allclose(adjusted_corners, corners, atol=1.0):
+            logger.info("No significant corner adjustment made")
+            return None
+            
+        return adjusted_corners
+
+    def _adjust_corners_dimension(self, image: np.ndarray, corners: np.ndarray, dimension: str, 
+                                current_squares: int, target_squares: int, square_size: float) -> np.ndarray:
+        """
+        Adjust corners in one dimension (width or height) to reach target number of squares.
+        
+        Args:
+            image: Original image
+            corners: Current corners
+            dimension: 'width' or 'height'
+            current_squares: Current number of squares in this dimension
+            target_squares: Target number of squares (8)
+            square_size: Size of each square
+            
+        Returns:
+            Corners with adjusted dimension
+        """
+        if current_squares == target_squares:
+            return corners
+            
+        adjusted_corners = corners.copy()
+        squares = current_squares
+        
+        while squares != target_squares:
+            if squares > target_squares:
+                # Need to shrink - contract the board
+                adjusted_corners = self._shrink_corners_one_square(image, adjusted_corners, dimension, square_size)
+                squares -= 1
+                logger.info(f"Shrunk {dimension}: now {squares} squares")
+            else:
+                # Need to grow - expand the board  
+                adjusted_corners = self._grow_corners_one_square(image, adjusted_corners, dimension, square_size)
+                squares += 1
+                logger.info(f"Grew {dimension}: now {squares} squares")
+        
+        return adjusted_corners
+
+    def _grow_corners_one_square(self, image: np.ndarray, corners: np.ndarray, dimension: str, square_size: float) -> np.ndarray:
+        """
+        Grow the board by one square in the specified dimension by expanding corners
+        in the direction that has pixel values most similar to the current board.
+        
+        Args:
+            image: Original image
+            corners: Current corners
+            dimension: 'width' or 'height'
+            square_size: Size of each square
+            
+        Returns:
+            Corners grown by one square
+        """
+        # Extract current board region for analysis
+        current_board = self._extract_board(image, corners)
+        board_avg = np.mean(current_board)
+        
+        if dimension == 'width':
+            # Consider expanding left or right
+            top_left, top_right, bottom_right, bottom_left = corners
+            
+            # Calculate potential left expansion
+            left_expansion = np.array([
+                [top_left[0] - square_size, top_left[1]],      # new top_left
+                [top_right[0], top_right[1]],                   # top_right unchanged
+                [bottom_right[0], bottom_right[1]],             # bottom_right unchanged  
+                [bottom_left[0] - square_size, bottom_left[1]]  # new bottom_left
+            ], dtype=np.float32)
+            
+            # Calculate potential right expansion
+            right_expansion = np.array([
+                [top_left[0], top_left[1]],                        # top_left unchanged
+                [top_right[0] + square_size, top_right[1]],       # new top_right
+                [bottom_right[0] + square_size, bottom_right[1]], # new bottom_right
+                [bottom_left[0], bottom_left[1]]                  # bottom_left unchanged
+            ], dtype=np.float32)
+            
+            # Test which expansion gives better similarity
+            left_board = self._extract_board(image, left_expansion)
+            right_board = self._extract_board(image, right_expansion)
+            
+            left_avg = np.mean(left_board)
+            right_avg = np.mean(right_board)
+            
+            left_similarity = abs(board_avg - left_avg)
+            right_similarity = abs(board_avg - right_avg)
+            
+            if left_similarity < right_similarity:
+                logger.info(f"Expanded left (similarity: {left_similarity:.2f} vs {right_similarity:.2f})")
+                return left_expansion
+            else:
+                logger.info(f"Expanded right (similarity: {right_similarity:.2f} vs {left_similarity:.2f})")
+                return right_expansion
+                
+        else:  # dimension == 'height'
+            # Consider expanding up or down
+            top_left, top_right, bottom_right, bottom_left = corners
+            
+            # Calculate potential up expansion
+            up_expansion = np.array([
+                [top_left[0], top_left[1] - square_size],      # new top_left
+                [top_right[0], top_right[1] - square_size],    # new top_right
+                [bottom_right[0], bottom_right[1]],            # bottom_right unchanged
+                [bottom_left[0], bottom_left[1]]               # bottom_left unchanged
+            ], dtype=np.float32)
+            
+            # Calculate potential down expansion
+            down_expansion = np.array([
+                [top_left[0], top_left[1]],                       # top_left unchanged
+                [top_right[0], top_right[1]],                     # top_right unchanged
+                [bottom_right[0], bottom_right[1] + square_size], # new bottom_right
+                [bottom_left[0], bottom_left[1] + square_size]    # new bottom_left
+            ], dtype=np.float32)
+            
+            # Test which expansion gives better similarity
+            up_board = self._extract_board(image, up_expansion)
+            down_board = self._extract_board(image, down_expansion)
+            
+            up_avg = np.mean(up_board)
+            down_avg = np.mean(down_board)
+            
+            up_similarity = abs(board_avg - up_avg)
+            down_similarity = abs(board_avg - down_avg)
+            
+            if up_similarity < down_similarity:
+                logger.info(f"Expanded up (similarity: {up_similarity:.2f} vs {down_similarity:.2f})")
+                return up_expansion
+            else:
+                logger.info(f"Expanded down (similarity: {down_similarity:.2f} vs {up_similarity:.2f})")
+                return down_expansion
+
+    def _shrink_corners_one_square(self, image: np.ndarray, corners: np.ndarray, dimension: str, square_size: float) -> np.ndarray:
+        """
+        Shrink the board by one square in the specified dimension by contracting corners
+        from the side that is most different from the core board.
+        
+        Args:
+            image: Original image  
+            corners: Current corners
+            dimension: 'width' or 'height'
+            square_size: Size of each square
+            
+        Returns:
+            Corners shrunk by one square
+        """
+        # Extract current board region for analysis
+        current_board = self._extract_board(image, corners)
+        
+        if dimension == 'width':
+            # Consider shrinking from left or right
+            top_left, top_right, bottom_right, bottom_left = corners
+            
+            # Calculate potential left shrinkage
+            left_shrinkage = np.array([
+                [top_left[0] + square_size, top_left[1]],      # new top_left
+                [top_right[0], top_right[1]],                   # top_right unchanged
+                [bottom_right[0], bottom_right[1]],             # bottom_right unchanged
+                [bottom_left[0] + square_size, bottom_left[1]] # new bottom_left
+            ], dtype=np.float32)
+            
+            # Calculate potential right shrinkage
+            right_shrinkage = np.array([
+                [top_left[0], top_left[1]],                        # top_left unchanged
+                [top_right[0] - square_size, top_right[1]],       # new top_right
+                [bottom_right[0] - square_size, bottom_right[1]], # new bottom_right
+                [bottom_left[0], bottom_left[1]]                  # bottom_left unchanged
+            ], dtype=np.float32)
+            
+            # Extract the strips being removed and compare to core
+            board_height = current_board.shape[0]
+            strip_width = int(square_size * current_board.shape[1] / np.linalg.norm(top_right - top_left))
+            
+            left_strip = current_board[:, :strip_width]
+            right_strip = current_board[:, -strip_width:]
+            core_board = current_board[:, strip_width:-strip_width]
+            
+            core_avg = np.mean(core_board)
+            left_avg = np.mean(left_strip)
+            right_avg = np.mean(right_strip)
+            
+            left_difference = abs(core_avg - left_avg)
+            right_difference = abs(core_avg - right_avg)
+            
+            if left_difference > right_difference:
+                logger.info(f"Shrunk from left (difference: {left_difference:.2f} vs {right_difference:.2f})")
+                return left_shrinkage
+            else:
+                logger.info(f"Shrunk from right (difference: {right_difference:.2f} vs {left_difference:.2f})")
+                return right_shrinkage
+                
+        else:  # dimension == 'height'
+            # Consider shrinking from top or bottom
+            top_left, top_right, bottom_right, bottom_left = corners
+            
+            # Calculate potential top shrinkage
+            top_shrinkage = np.array([
+                [top_left[0], top_left[1] + square_size],      # new top_left
+                [top_right[0], top_right[1] + square_size],    # new top_right
+                [bottom_right[0], bottom_right[1]],            # bottom_right unchanged
+                [bottom_left[0], bottom_left[1]]               # bottom_left unchanged
+            ], dtype=np.float32)
+            
+            # Calculate potential bottom shrinkage
+            bottom_shrinkage = np.array([
+                [top_left[0], top_left[1]],                       # top_left unchanged
+                [top_right[0], top_right[1]],                     # top_right unchanged
+                [bottom_right[0], bottom_right[1] - square_size], # new bottom_right
+                [bottom_left[0], bottom_left[1] - square_size]    # new bottom_left
+            ], dtype=np.float32)
+            
+            # Extract the strips being removed and compare to core
+            board_width = current_board.shape[1]
+            strip_height = int(square_size * current_board.shape[0] / np.linalg.norm(bottom_left - top_left))
+            
+            top_strip = current_board[:strip_height, :]
+            bottom_strip = current_board[-strip_height:, :]
+            core_board = current_board[strip_height:-strip_height, :]
+            
+            core_avg = np.mean(core_board)
+            top_avg = np.mean(top_strip)
+            bottom_avg = np.mean(bottom_strip)
+            
+            top_difference = abs(core_avg - top_avg)
+            bottom_difference = abs(core_avg - bottom_avg)
+            
+            if top_difference > bottom_difference:
+                logger.info(f"Shrunk from top (difference: {top_difference:.2f} vs {bottom_difference:.2f})")
+                return top_shrinkage
+            else:
+                logger.info(f"Shrunk from bottom (difference: {bottom_difference:.2f} vs {top_difference:.2f})")
+                return bottom_shrinkage
+
+    def _iterative_board_adjustment(self, board: np.ndarray, expected_square_size: int) -> np.ndarray:
+        """
+        Iteratively adjust board size to exactly 8x8 squares by growing or shrinking
+        based on pixel similarity analysis.
+        
+        Args:
+            board: The extracted board image
+            expected_square_size: Expected size of each chess square in pixels
+            
+        Returns:
+            Adjusted board image that is exactly 8*expected_square_size x 8*expected_square_size
+        """
+        height, width = board.shape[:2]
+        target_size = 8 * expected_square_size
+        
+        # If board is already the right size, return as-is
+        if height == target_size and width == target_size:
+            return board
+        
+        # Calculate how many squares we have in each direction
+        rows_in_squares = height / expected_square_size
+        cols_in_squares = width / expected_square_size
+        
+        # Check if dimensions are close to integer multiples
+        row_squares_int = round(rows_in_squares)
+        col_squares_int = round(cols_in_squares)
+        
+        row_error = abs(rows_in_squares - row_squares_int)
+        col_error = abs(cols_in_squares - col_squares_int)
+        
+        # Only proceed if we're very close to integer multiples (within 25% tolerance)
+        tolerance = 0.25
+        if row_error > tolerance or col_error > tolerance:
+            logger.info(f"Board dimensions not close to integer multiples: {cols_in_squares:.2f}x{rows_in_squares:.2f}")
+            return board
+        
+        logger.info(f"Board size: {width}x{height} pixels = {col_squares_int}x{row_squares_int} squares")
+        logger.info(f"Target: {target_size}x{target_size} pixels = 8x8 squares")
+        
+        current_board = board.copy()
+        
+        # Iteratively adjust rows
+        current_board = self._adjust_dimension(current_board, 'rows', row_squares_int, 8, expected_square_size)
+        
+        # Iteratively adjust columns
+        current_board = self._adjust_dimension(current_board, 'cols', col_squares_int, 8, expected_square_size)
+        
+        logger.info(f"Final adjusted board size: {current_board.shape[1]}x{current_board.shape[0]} pixels")
+        
+        return current_board
+
+    def _adjust_dimension(self, board: np.ndarray, dimension: str, current_squares: int, target_squares: int, square_size: int) -> np.ndarray:
+        """
+        Iteratively adjust one dimension (rows or cols) to reach target number of squares.
+        
+        Args:
+            board: Current board image
+            dimension: 'rows' or 'cols'
+            current_squares: Current number of squares in this dimension
+            target_squares: Target number of squares (8)
+            square_size: Size of each square in pixels
+            
+        Returns:
+            Board with adjusted dimension
+        """
+        if current_squares == target_squares:
+            return board
+        
+        current_board = board.copy()
+        
+        while current_squares != target_squares:
+            if current_squares > target_squares:
+                # Need to shrink - remove one square
+                current_board = self._shrink_board_one_square(current_board, dimension, square_size)
+                current_squares -= 1
+                logger.info(f"Shrunk {dimension}: now {current_squares} squares")
+            else:
+                # Need to grow - add one square
+                current_board = self._grow_board_one_square(current_board, dimension, square_size)
+                current_squares += 1
+                logger.info(f"Grew {dimension}: now {current_squares} squares")
+        
+        return current_board
+
+    def _grow_board_one_square(self, board: np.ndarray, dimension: str, square_size: int) -> np.ndarray:
+        """
+        Grow the board by one square in the specified dimension by extending the side
+        that has pixel values most similar to the current board.
+        
+        Args:
+            board: Current board image
+            dimension: 'rows' or 'cols'
+            square_size: Size of each square in pixels
+            
+        Returns:
+            Board grown by one square
+        """
+        if dimension == 'rows':
+            # Calculate average pixel values for top and bottom strips
+            board_avg = np.mean(board)
+            
+            # Create extension strips by replicating edge pixels
+            top_strip = np.tile(board[0:1, :], (square_size, 1, 1)) if len(board.shape) == 3 else np.tile(board[0:1, :], (square_size, 1))
+            bottom_strip = np.tile(board[-1:, :], (square_size, 1, 1)) if len(board.shape) == 3 else np.tile(board[-1:, :], (square_size, 1))
+            
+            # Calculate which extension is more similar to the board
+            top_avg = np.mean(top_strip)
+            bottom_avg = np.mean(bottom_strip)
+            
+            top_similarity = abs(board_avg - top_avg)
+            bottom_similarity = abs(board_avg - bottom_avg)
+            
+            if top_similarity < bottom_similarity:
+                # Extend top
+                result = np.vstack([top_strip, board])
+                logger.info(f"Extended top (similarity: {top_similarity:.2f} vs {bottom_similarity:.2f})")
+            else:
+                # Extend bottom
+                result = np.vstack([board, bottom_strip])
+                logger.info(f"Extended bottom (similarity: {bottom_similarity:.2f} vs {top_similarity:.2f})")
+                
+        else:  # dimension == 'cols'
+            # Calculate average pixel values for left and right strips
+            board_avg = np.mean(board)
+            
+            # Create extension strips by replicating edge pixels
+            left_strip = np.tile(board[:, 0:1], (1, square_size, 1)) if len(board.shape) == 3 else np.tile(board[:, 0:1], (1, square_size))
+            right_strip = np.tile(board[:, -1:], (1, square_size, 1)) if len(board.shape) == 3 else np.tile(board[:, -1:], (1, square_size))
+            
+            # Calculate which extension is more similar to the board
+            left_avg = np.mean(left_strip)
+            right_avg = np.mean(right_strip)
+            
+            left_similarity = abs(board_avg - left_avg)
+            right_similarity = abs(board_avg - right_avg)
+            
+            if left_similarity < right_similarity:
+                # Extend left
+                result = np.hstack([left_strip, board])
+                logger.info(f"Extended left (similarity: {left_similarity:.2f} vs {right_similarity:.2f})")
+            else:
+                # Extend right
+                result = np.hstack([board, right_strip])
+                logger.info(f"Extended right (similarity: {right_similarity:.2f} vs {left_similarity:.2f})")
+        
+        return result
+
+    def _shrink_board_one_square(self, board: np.ndarray, dimension: str, square_size: int) -> np.ndarray:
+        """
+        Shrink the board by one square in the specified dimension by removing the side
+        that is most different from the rest of the board.
+        
+        Args:
+            board: Current board image
+            dimension: 'rows' or 'cols'
+            square_size: Size of each square in pixels
+            
+        Returns:
+            Board shrunk by one square
+        """
+        if dimension == 'rows':
+            # Calculate average pixel values for the main board and edge strips
+            core_board = board[square_size:-square_size, :]  # Board without top/bottom strips
+            core_avg = np.mean(core_board)
+            
+            top_strip = board[:square_size, :]
+            bottom_strip = board[-square_size:, :]
+            
+            top_avg = np.mean(top_strip)
+            bottom_avg = np.mean(bottom_strip)
+            
+            # Calculate which strip is most different from core
+            top_difference = abs(core_avg - top_avg)
+            bottom_difference = abs(core_avg - bottom_avg)
+            
+            if top_difference > bottom_difference:
+                # Remove top strip
+                result = board[square_size:, :]
+                logger.info(f"Removed top strip (difference: {top_difference:.2f} vs {bottom_difference:.2f})")
+            else:
+                # Remove bottom strip
+                result = board[:-square_size, :]
+                logger.info(f"Removed bottom strip (difference: {bottom_difference:.2f} vs {top_difference:.2f})")
+                
+        else:  # dimension == 'cols'
+            # Calculate average pixel values for the main board and edge strips
+            core_board = board[:, square_size:-square_size]  # Board without left/right strips
+            core_avg = np.mean(core_board)
+            
+            left_strip = board[:, :square_size]
+            right_strip = board[:, -square_size:]
+            
+            left_avg = np.mean(left_strip)
+            right_avg = np.mean(right_strip)
+            
+            # Calculate which strip is most different from core
+            left_difference = abs(core_avg - left_avg)
+            right_difference = abs(core_avg - right_avg)
+            
+            if left_difference > right_difference:
+                # Remove left strip
+                result = board[:, square_size:]
+                logger.info(f"Removed left strip (difference: {left_difference:.2f} vs {right_difference:.2f})")
+            else:
+                # Remove right strip
+                result = board[:, :-square_size]
+                logger.info(f"Removed right strip (difference: {right_difference:.2f} vs {left_difference:.2f})")
+        
+        return result
+
+    def _trim_lines_to_8x8_grid(self, lines: np.ndarray, direction: str, square_side_length: float) -> np.ndarray:
+        """
+        Trim lines to exactly 9 lines (for 8x8 grid) by selecting the best 8-square region
+        based on line spacing consistency and pixel color analysis.
+        
+        Args:
+            lines: Array of lines to trim
+            direction: 'vertical' or 'horizontal'
+            square_side_length: Expected distance between adjacent grid lines
+            
+        Returns:
+            Trimmed array with exactly 9 lines
+        """
+        if len(lines) <= 9:
+            return lines
+        
+        # Extract coordinates and sort lines
+        if direction == 'vertical':
+            coords = [(line[0] + line[2]) / 2 for line in lines]
+        else:
+            coords = [(line[1] + line[3]) / 2 for line in lines]
+        
+        coords_array = np.array(coords)
+        sorted_indices = np.argsort(coords_array)
+        sorted_lines = lines[sorted_indices]
+        sorted_coords = coords_array[sorted_indices]
+        
+        # Find the best contiguous 9-line segment
+        best_start_idx = 0
+        best_score = float('-inf')
+        
+        for start_idx in range(len(sorted_lines) - 8):  # -8 because we need 9 lines
+            end_idx = start_idx + 9
+            segment_coords = sorted_coords[start_idx:end_idx]
+            
+            # Calculate spacing consistency score
+            spacings = np.diff(segment_coords)
+            expected_spacing = square_side_length
+            
+            # Score based on how close spacings are to expected
+            spacing_errors = np.abs(spacings - expected_spacing)
+            spacing_score = -np.mean(spacing_errors)  # Lower error = higher score
+            
+            # Score based on spacing consistency (low variation)
+            consistency_score = -np.std(spacings)  # Lower std = higher score
+            
+            # Prefer more centered positions (avoid extreme edges)
+            total_lines = len(sorted_lines)
+            center_position = (total_lines - 9) / 2
+            center_penalty = -abs(start_idx - center_position) * 0.1
+            
+            # Combined score
+            total_score = spacing_score + consistency_score + center_penalty
+            
+            if total_score > best_score:
+                best_score = total_score
+                best_start_idx = start_idx
+        
+        # Extract the best 9 lines
+        selected_lines = sorted_lines[best_start_idx:best_start_idx + 9]
+        selected_coords = sorted_coords[best_start_idx:best_start_idx + 9]
+        
+        logger.info(f"Trimmed {direction} lines from {len(lines)} to 9 lines")
+        logger.info(f"Selected range: {selected_coords[0]:.1f} to {selected_coords[-1]:.1f} pixels")
+        logger.info(f"Average spacing: {np.mean(np.diff(selected_coords)):.1f} pixels (expected: {square_side_length:.1f})")
+        
+        return selected_lines

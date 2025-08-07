@@ -1,0 +1,55 @@
+# Edge-based Chess Board Detector Configuration
+# This file contains all hyperparameters for the detector
+
+# Edge detection parameters
+edge_detection:
+  gaussian_blur:
+    kernel_size: [3, 3]
+    sigma: 0
+  canny:
+    # These will be calculated adaptively based on image median
+    # lower_threshold_factor: 0.5  # multiplied by median
+    # upper_threshold_factor: 0.9  # multiplied by median
+    aperture_size: 3
+
+# Line detection parameters
+line_detection:
+  hough_lines:
+    rho: 1
+    theta_resolution: 180  # divisions of pi (pi/180 = 1 degree)
+    threshold: 200
+    min_line_length: 140
+    max_line_gap: 50
+
+# Line filtering parameters
+line_filtering:
+  angle_tolerance: 1.0  # degrees for vertical/horizontal classification
+  
+# Distance analysis parameters  
+distance_analysis:
+  tolerance_pixels: 2.75  # tolerance for grouping similar distances
+  min_instances: 12  # minimum instances needed for a distance to be "frequent"
+  validation_tolerance_pixels: 2.0  # tolerance for validating distance multiples
+  min_square_size: 30.0  # minimum reasonable chess square size in pixels
+
+# Line selection parameters
+line_selection:
+  tolerance_pixels: 1.0  # base tolerance for pattern matching
+  tolerance_multiplier: 1.0  # multiplier for larger distances
+  min_matching_distances: 3  # minimum matching distances for a line to be selected
+  min_small_matching_distances: 1  # minimum small (≤3x) matching distances
+  boundary_buffer_pixels: 50  # buffer for boundary filtering
+
+# Board validation parameters
+board_validation:
+  min_lines_required: 7  # minimum lines needed in each direction
+  corner_geometry_tolerance_percent: 2.0  # tolerance for corner geometry validation
+  angle_tolerance_degrees: 2.0  # tolerance for corner angles (should be ~90°)
+
+# Board extraction parameters
+board_extraction:
+  output_size: 400  # size of extracted board in pixels
+  
+# Duplicate removal parameters
+duplicate_removal:
+  distance_threshold: 5.0  # threshold for considering lines as duplicates
