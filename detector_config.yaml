@@ -53,3 +53,9 @@ board_extraction:
 # Duplicate removal parameters
 duplicate_removal:
   distance_threshold: 5.0  # threshold for considering lines as duplicates
+
+fast_settings:
+  use_downscale: true
+  max_detection_dim: 720
+  max_lines_per_direction: 60
+  boundary_filter_iterations: 2

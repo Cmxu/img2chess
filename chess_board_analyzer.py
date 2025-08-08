@@ -72,7 +72,8 @@ class ChessBoardAnalyzer:
     def _get_device(self, device: str) -> str:
         """Determine the best available device."""
         if device == 'auto':
-            if torch.backends.mps.is_available():
+            mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+            if mps_ok:
                 return 'mps'
             elif torch.cuda.is_available():
                 return 'cuda'

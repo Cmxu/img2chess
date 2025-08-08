@@ -73,7 +73,8 @@ class ChessPositionAnalyzer:
     def _get_device(self, device: str) -> torch.device:
         """Determine the best available device."""
         if device == "auto":
-            if torch.backends.mps.is_available():
+            mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+            if mps_ok:
                 return torch.device('mps')
             elif torch.cuda.is_available():
                 return torch.device('cuda')

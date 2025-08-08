@@ -124,7 +124,8 @@ def main():
     
     # Determine device
     if args.device == 'auto':
-        if torch.backends.mps.is_available():
+        mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+        if mps_ok:
             device = 'mps'
             print("Auto-detected MPS (Apple Silicon GPU)")
         elif torch.cuda.is_available():

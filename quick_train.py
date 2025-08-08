@@ -24,7 +24,8 @@ def quick_train():
     np.random.seed(42)
     
     # Check for best available device (MPS for Apple Silicon, CUDA for NVIDIA, CPU fallback)
-    if torch.backends.mps.is_available():
+    mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    if mps_ok:
         device = torch.device('mps')
         print(f'Using device: {device} (Apple Silicon GPU)')
     elif torch.cuda.is_available():

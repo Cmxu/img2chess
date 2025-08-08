@@ -1,0 +1,10 @@
+input_root: test_frames/large_frame_data
+output_root: test_frames/async_extracted_boards
+detector_config: img2chess/detector_config.yaml
+similarity_threshold: 0.6
+min_square_confidence: 0.90
+classifier:
+  model_path: img2chess/chess_piece_classifier.pth
+  device: cuda  # cuda|mps|cpu|auto
+  max_batch_size: 256
+  batch_timeout_s: 0.01 

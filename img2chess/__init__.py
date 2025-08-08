@@ -11,6 +11,7 @@ from .board_detector import ChessBoardDetector
 from .edge_based_board_detector import EdgeBasedChessBoardDetector
 from .square_extractor import SquareExtractor
 from .utils import visualize_board, save_squares
+from .fast_edge_detector import FastEdgeBasedDetector
 
 __version__ = "0.1.0"
 __author__ = "img2chess"
@@ -21,5 +22,6 @@ __all__ = [
     "EdgeBasedChessBoardDetector",
     "SquareExtractor", 
     "visualize_board",
-    "save_squares"
+    "save_squares",
+    "FastEdgeBasedDetector",
 ]

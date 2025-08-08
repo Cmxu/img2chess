@@ -132,7 +132,7 @@ class ChessPieceDataset(Dataset):
         """Apply random augmentations to the image."""
         # Random rotation (-10 to +10 degrees)
         if random.random() < 0.5:
-            angle = random.uniform(-10, 10)
+            angle = random.uniform(-5, 5)
             image = image.rotate(angle, resample=Image.Resampling.BILINEAR, expand=False)
         
         # Random translation (up to 10% of image size)
@@ -163,6 +163,14 @@ class ChessPieceDataset(Dataset):
         if random.random() < 0.3:  # 30% chance of applying random erasing
             image = self._apply_random_erasing(image)
         
+        # 25% chance: overlay a random semi-transparent orange square on top
+        if random.random() < 0.25:
+            image = self._apply_random_orange_overlay(image)
+        
+        # Uniform random noise ±8 applied with 50% probability
+        if random.random() < 0.5:
+            image = self._apply_uniform_noise(image, max_delta=8)
+        
         return image
     
     def _apply_random_erasing(self, image: Image.Image) -> Image.Image:
@@ -190,17 +198,64 @@ class ChessPieceDataset(Dataset):
         
         return Image.fromarray(img_array)
 
+    def _apply_random_orange_overlay(self, image: Image.Image) -> Image.Image:
+        """Overlay a rotated, semi-transparent orange square with area <= 10% of the image."""
+        # Work in RGBA to respect transparency during paste
+        base_rgba = image.convert("RGBA")
+
+        # Choose side length so that square area is <= 10% of image area
+        # side_fraction in [~0.08, ~0.316] of the image dimension ensures area <= ~10%
+        w_min_fraction = 0.25
+        w_max_fraction = 0.35
+        h_min_fraction = 0.25
+        h_max_fraction = 1
+        h_side_length = int(random.uniform(h_min_fraction, h_max_fraction) * self.image_size)
+        h_side_length = max(1, h_side_length)
+        w_side_length = int(random.uniform(w_min_fraction, w_max_fraction) * self.image_size)
+        w_side_length = max(1, w_side_length)
+
+        # Random orange color (vary within orange spectrum) and alpha for semi-transparency
+        red = random.randint(200, 255)
+        green = random.randint(80, 165)
+        blue = random.randint(0, 60)
+        alpha = random.randint(64, 180)  # 25% - 70% opaque
+
+        square = Image.new("RGBA", (h_side_length, w_side_length), (red, green, blue, alpha))
+
+        # Random rotation of the square
+        angle = random.uniform(-45, 45)
+        rotated_square = square.rotate(angle, resample=Image.Resampling.BILINEAR, expand=True)
+
+        # Random position; allow clipping at edges by constraining top-left
+        max_x = max(0, self.image_size - rotated_square.width)
+        max_y = max(0, self.image_size - rotated_square.height)
+        x = random.randint(0, max_x)
+        y = random.randint(0, max_y)
+
+        # Paste with alpha channel as mask
+        base_rgba.paste(rotated_square, (x, y), rotated_square)
+
+        return base_rgba.convert("RGB")
+
+    def _apply_uniform_noise(self, image: Image.Image, max_delta: int = 8) -> Image.Image:
+        """Add per-pixel uniform noise in [-max_delta, max_delta] to RGB channels."""
+        rgb_image = image.convert("RGB")
+        img_array = np.array(rgb_image).astype(np.int16)
+        noise = np.random.randint(-max_delta, max_delta + 1, size=img_array.shape, dtype=np.int16)
+        noisy = np.clip(img_array + noise, 0, 255).astype(np.uint8)
+        return Image.fromarray(noisy, mode="RGB")
+
 
 class ChessPieceClassifier(nn.Module):
     """
     Chess piece classifier using DINOv2 feature extractor + 3-layer linear head.
     """
     
-    def __init__(self, num_classes: int = 13, freeze_backbone: bool = True):
+    def __init__(self, num_classes: int = 13, freeze_backbone: bool = True, model_type: str = "dinov2-small"):
         super(ChessPieceClassifier, self).__init__()
         
         # Load DINOv2 backbone
-        self.backbone = AutoModel.from_pretrained("facebook/dinov2-base")
+        self.backbone = AutoModel.from_pretrained(f"facebook/{model_type}")
         
         # Freeze backbone if specified
         if freeze_backbone:
@@ -208,8 +263,7 @@ class ChessPieceClassifier(nn.Module):
                 param.requires_grad = False
         
         # Get feature dimension from backbone
-        # DINOv2-base outputs features with dimension 768
-        feature_dim = 768  # Fixed dimension for DINOv2-base
+        feature_dim = self.backbone.config.hidden_size
         
         # 3-layer linear head
         self.classifier = nn.Sequential(
@@ -296,7 +350,8 @@ def load_trained_model(model_path: str = "chess_piece_classifier.pth") -> ChessP
     Returns:
         Loaded ChessPieceClassifier model
     """
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')
+    mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    device = torch.device('mps' if mps_ok else 'cuda' if torch.cuda.is_available() else 'cpu')
     
     # Load checkpoint
     checkpoint = torch.load(model_path, map_location=device)
@@ -316,7 +371,7 @@ def load_trained_model(model_path: str = "chess_piece_classifier.pth") -> ChessP
     return model
 
 
-def train_model(model, train_loader, val_loader, num_epochs=10, device='cuda'):
+def train_model(model, train_loader, val_loader, num_epochs=10, device='cpu'):
     """Train the chess piece classifier."""
     
     model = model.to(device)
@@ -406,14 +461,14 @@ def main():
     np.random.seed(42)
     
     # Check for best available device (MPS for Apple Silicon, CUDA for NVIDIA, CPU fallback)
-    if torch.backends.mps.is_available():
-        device = torch.device('mps')
+    mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    device = torch.device('mps' if mps_ok else 'cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if mps_ok:
         print(f'Using device: {device} (Apple Silicon GPU)')
     elif torch.cuda.is_available():
-        device = torch.device('cuda')
         print(f'Using device: {device} (NVIDIA GPU)')
     else:
-        device = torch.device('cpu')
         print(f'Using device: {device} (CPU)')
         print('⚠️  Consider using MPS (Apple Silicon) or CUDA (NVIDIA) for faster training')
     
@@ -450,7 +505,7 @@ def main():
     print("Starting training...")
     train_losses, val_accuracies = train_model(
         model, train_loader, val_loader, 
-        num_epochs=15, device=device
+        num_epochs=30, device=device
     )
     
     # Save model

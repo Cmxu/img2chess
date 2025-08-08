@@ -1,0 +1,286 @@
+{
+  "image": "img2chess/sample_chess_frame.jpg",
+  "corners": [
+    [
+      392.0,
+      29.0
+    ],
+    [
+      786.0,
+      29.0
+    ],
+    [
+      786.0,
+      423.0
+    ],
+    [
+      392.0,
+      423.0
+    ]
+  ],
+  "all_high": true,
+  "min_confidence": 0.9,
+  "stats": {
+    "min": 0.9150940775871277,
+    "max": 1.0,
+    "avg": 0.9975621700286865
+  },
+  "results": {
+    "a1": {
+      "label": "empty",
+      "confidence": 0.9984567165374756
+    },
+    "a2": {
+      "label": "wp",
+      "confidence": 0.9998914003372192
+    },
+    "a3": {
+      "label": "empty",
+      "confidence": 0.9986327290534973
+    },
+    "a4": {
+      "label": "empty",
+      "confidence": 0.9864424467086792
+    },
+    "a5": {
+      "label": "empty",
+      "confidence": 0.999982476234436
+    },
+    "a6": {
+      "label": "bp",
+      "confidence": 0.9999986886978149
+    },
+    "a7": {
+      "label": "empty",
+      "confidence": 0.9996073842048645
+    },
+    "a8": {
+      "label": "br",
+      "confidence": 1.0
+    },
+    "b1": {
+      "label": "wr",
+      "confidence": 0.9999821186065674
+    },
+    "b2": {
+      "label": "wp",
+      "confidence": 0.9826194047927856
+    },
+    "b3": {
+      "label": "empty",
+      "confidence": 0.9999754428863525
+    },
+    "b4": {
+      "label": "empty",
+      "confidence": 0.9999984502792358
+    },
+    "b5": {
+      "label": "empty",
+      "confidence": 0.9999877214431763
+    },
+    "b6": {
+      "label": "empty",
+      "confidence": 0.9999845027923584
+    },
+    "b7": {
+      "label": "bp",
+      "confidence": 0.9999972581863403
+    },
+    "b8": {
+      "label": "empty",
+      "confidence": 0.9999995231628418
+    },
+    "c1": {
+      "label": "empty",
+      "confidence": 0.9954572916030884
+    },
+    "c2": {
+      "label": "empty",
+      "confidence": 0.9999977350234985
+    },
+    "c3": {
+      "label": "wp",
+      "confidence": 0.9981797933578491
+    },
+    "c4": {
+      "label": "empty",
+      "confidence": 0.9999457597732544
+    },
+    "c5": {
+      "label": "empty",
+      "confidence": 0.9999996423721313
+    },
+    "c6": {
+      "label": "bn",
+      "confidence": 0.9999148845672607
+    },
+    "c7": {
+      "label": "empty",
+      "confidence": 0.9999892711639404
+    },
+    "c8": {
+      "label": "empty",
+      "confidence": 0.9999589920043945
+    },
+    "d1": {
+      "label": "empty",
+      "confidence": 0.9864294528961182
+    },
+    "d2": {
+      "label": "empty",
+      "confidence": 0.9999923706054688
+    },
+    "d3": {
+      "label": "empty",
+      "confidence": 0.9999978542327881
+    },
+    "d4": {
+      "label": "empty",
+      "confidence": 0.9999643564224243
+    },
+    "d5": {
+      "label": "empty",
+      "confidence": 0.9999728202819824
+    },
+    "d6": {
+      "label": "empty",
+      "confidence": 0.9999417066574097
+    },
+    "d7": {
+      "label": "bb",
+      "confidence": 0.9999995231628418
+    },
+    "d8": {
+      "label": "bq",
+      "confidence": 0.999983549118042
+    },
+    "e1": {
+      "label": "wk",
+      "confidence": 0.9927734732627869
+    },
+    "e2": {
+      "label": "empty",
+      "confidence": 0.9999487400054932
+    },
+    "e3": {
+      "label": "wn",
+      "confidence": 0.9996525049209595
+    },
+    "e4": {
+      "label": "bp",
+      "confidence": 0.9999947547912598
+    },
+    "e5": {
+      "label": "empty",
+      "confidence": 0.9999462366104126
+    },
+    "e6": {
+      "label": "bp",
+      "confidence": 0.9999949932098389
+    },
+    "e7": {
+      "label": "empty",
+      "confidence": 0.9999979734420776
+    },
+    "e8": {
+      "label": "bk",
+      "confidence": 0.9999901056289673
+    },
+    "f1": {
+      "label": "empty",
+      "confidence": 0.9969839453697205
+    },
+    "f2": {
+      "label": "wp",
+      "confidence": 0.9992408752441406
+    },
+    "f3": {
+      "label": "empty",
+      "confidence": 0.9976074695587158
+    },
+    "f4": {
+      "label": "wq",
+      "confidence": 0.9150940775871277
+    },
+    "f5": {
+      "label": "empty",
+      "confidence": 0.9999895095825195
+    },
+    "f6": {
+      "label": "empty",
+      "confidence": 0.999984860420227
+    },
+    "f7": {
+      "label": "bp",
+      "confidence": 0.9999929666519165
+    },
+    "f8": {
+      "label": "br",
+      "confidence": 1.0
+    },
+    "g1": {
+      "label": "wn",
+      "confidence": 0.9991269707679749
+    },
+    "g2": {
+      "label": "wp",
+      "confidence": 0.9999529123306274
+    },
+    "g3": {
+      "label": "empty",
+      "confidence": 0.9999998807907104
+    },
+    "g4": {
+      "label": "empty",
+      "confidence": 0.9999997615814209
+    },
+    "g5": {
+      "label": "empty",
+      "confidence": 0.9999994039535522
+    },
+    "g6": {
+      "label": "empty",
+      "confidence": 0.9999985694885254
+    },
+    "g7": {
+      "label": "empty",
+      "confidence": 0.9999998807907104
+    },
+    "g8": {
+      "label": "empty",
+      "confidence": 0.9999998807907104
+    },
+    "h1": {
+      "label": "wr",
+      "confidence": 0.9999992847442627
+    },
+    "h2": {
+      "label": "wp",
+      "confidence": 0.9984604120254517
+    },
+    "h3": {
+      "label": "empty",
+      "confidence": 0.9999991655349731
+    },
+    "h4": {
+      "label": "empty",
+      "confidence": 0.9999864101409912
+    },
+    "h5": {
+      "label": "empty",
+      "confidence": 0.9999992847442627
+    },
+    "h6": {
+      "label": "empty",
+      "confidence": 0.9999943971633911
+    },
+    "h7": {
+      "label": "bp",
+      "confidence": 0.9999929666519165
+    },
+    "h8": {
+      "label": "empty",
+      "confidence": 0.9999959468841553
+    }
+  }
+}
