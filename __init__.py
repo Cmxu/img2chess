@@ -8,4 +8,9 @@ This is the main package entry point that re-exports from the nested img2chess m
 from .img2chess import *
 
 # Also make the nested module available directly
-from . import img2chess 
+from . import img2chess
+
+# Re-export specific symbols for backward compatibility
+from .board_extractor_async import process_youtube_video_by_interval
+from .img2chess.async_piece_classifier import get_async_classifier, AsyncPieceClassifierService
+from .img2chess.chess_piece_classifier import ChessPieceClassifier

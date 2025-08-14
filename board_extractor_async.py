@@ -6,9 +6,17 @@ from typing import List, Tuple, Dict, Optional, Set
 import time
 import concurrent.futures
 
-from img2chess.img2chess.clean_edge_detector import CleanEdgeBasedDetector
-from img2chess.img2chess.square_extractor import SquareExtractor
-from img2chess.async_piece_classifier import get_async_classifier, AsyncPieceClassifierService
+from .img2chess.clean_edge_detector import CleanEdgeBasedDetector
+from .img2chess.square_extractor import SquareExtractor
+from .async_piece_classifier import get_async_classifier, AsyncPieceClassifierService
+
+# New import for frame extraction from YouTube
+from src.agents.frame_agent import FrameAgent
+import threading
+from queue import Queue
+from tqdm import tqdm
+import chess
+import chess.pgn
 
 
 def boards_similar(prev_board: np.ndarray, curr_board: np.ndarray, similarity_threshold: float = 0.75) -> bool:
@@ -140,6 +148,277 @@ def _label_to_piece_char(label: str) -> Optional[str]:
     return mapping.get(label)
 
 
+# Helper: convert per-square results to FEN position string (position part only)
+def _square_results_to_fen(square_results: Dict[str, List[object]]) -> str:
+    """Create FEN position string from per-square results mapping.
+
+    square_results maps like {'a8': ['wp', 0.99], ...}. We only use the labels.
+    Returns the FEN position part (8 ranks separated by '/').
+    """
+    # Initialize empty 8x8 board with '.'
+    board: List[List[str]] = [['.' for _ in range(8)] for _ in range(8)]
+
+    for sq, val in square_results.items():
+        if not isinstance(sq, str) or len(sq) != 2:
+            continue
+        file_char, rank_char = sq[0], sq[1]
+        if file_char < 'a' or file_char > 'h':
+            continue
+        try:
+            rank = int(rank_char)
+        except Exception:
+            continue
+        if rank < 1 or rank > 8:
+            continue
+        label = None
+        if isinstance(val, (list, tuple)) and len(val) >= 1:
+            label = val[0]
+        elif isinstance(val, dict) and 'label' in val:
+            label = val['label']
+        if not isinstance(label, str):
+            continue
+
+        col = ord(file_char) - ord('a')
+        row = 8 - rank  # rank 8 is top row index 0
+
+        if label == 'empty':
+            continue
+        piece_char = _label_to_piece_char(label)
+        if piece_char:
+            board[row][col] = piece_char
+
+    # Convert to FEN rows
+    fen_rows: List[str] = []
+    for row in board:
+        fen_row = ''
+        empty_run = 0
+        for cell in row:
+            if cell == '.':
+                empty_run += 1
+            else:
+                if empty_run > 0:
+                    fen_row += str(empty_run)
+                    empty_run = 0
+                fen_row += cell
+        if empty_run > 0:
+            fen_row += str(empty_run)
+        fen_rows.append(fen_row)
+
+    return '/'.join(fen_rows)
+
+
+# Helpers for game extraction
+def _expand_rank(rank: str) -> List[str]:
+    squares: List[str] = []
+    for ch in rank:
+        if ch.isdigit():
+            squares.extend(['.'] * int(ch))
+        else:
+            squares.append(ch)
+    return squares
+
+
+def _is_valid_start_position(placement: str) -> bool:
+    """Check Chess/Chess960-like starting setup by piece counts per back ranks and pawns ranks.
+
+    - Rank 1 (bottom, index 7): 2x R, 2x N, 2x B, 1x K, 1x Q (uppercase)
+    - Rank 2 (index 6): 8x P
+    - Rank 7 (index 1): 8x p
+    - Rank 8 (top, index 0): 2x r, 2x n, 2x b, 1x k, 1x q (lowercase)
+    - Ranks 3..6 (indices 2..5): empty
+    """
+    ranks = placement.split('/')
+    if len(ranks) != 8:
+        return False
+    r8, r7, r6, r5, r4, r3, r2, r1 = [ _expand_rank(r) for r in ranks ]
+    # Validate empties
+    for r in (r6, r5, r4, r3):
+        if any(ch != '.' for ch in r):
+            return False
+    # Validate pawns
+    if not all(ch == 'p' for ch in r7):
+        return False
+    if not all(ch == 'P' for ch in r2):
+        return False
+    # Validate back ranks counts
+    from collections import Counter
+    c8 = Counter(r8)
+    c1 = Counter(r1)
+    if not (c8.get('r', 0) == 2 and c8.get('n', 0) == 2 and c8.get('b', 0) == 2 and c8.get('k', 0) == 1 and c8.get('q', 0) == 1):
+        return False
+    if not (c1.get('R', 0) == 2 and c1.get('N', 0) == 2 and c1.get('B', 0) == 2 and c1.get('K', 0) == 1 and c1.get('Q', 0) == 1):
+        return False
+    return True
+
+
+def _piece_placement_to_full_fen(placement: str, turn: str, fullmove: int) -> str:
+    castling = 'KQkq'
+    ep = '-'
+    halfmove = 0
+    turn_ch = 'w' if turn == 'w' else 'b'
+    return f"{placement} {turn_ch} {castling} {ep} {halfmove} {fullmove}"
+
+
+def _determine_move_between_placements(before: str, after: str, turn: str, fullmove: int) -> Dict[str, object]:
+    """Determine a legal move from 'before' to 'after' piece placements.
+    Uses python-chess, comparing board_fen only. Assumes Chess960 may be in effect.
+    """
+    try:
+        full_fen = _piece_placement_to_full_fen(before, turn, fullmove)
+        board = chess.Board(full_fen, chess960=True)
+        after_board_fen = after
+        for move in board.legal_moves:
+            test = board.copy()
+            test.push(move)
+            if test.board_fen() == after_board_fen:
+                try:
+                    san = board.san(move)
+                except Exception:
+                    san = ''
+                return {
+                    'success': True,
+                    'uci': move.uci(),
+                    'san': san,
+                }
+        return {'success': False, 'uci': '', 'san': ''}
+    except Exception as e:
+        return {'success': False, 'uci': '', 'san': '', 'error': str(e)}
+
+
+def _compress_positions(sorted_items: List[Tuple[str, Dict]]) -> List[Dict[str, object]]:
+    """Compress consecutive identical FEN placements into segments with first/last frame and time."""
+    segments: List[Dict[str, object]] = []
+    prev_fen: Optional[str] = None
+    for key, info in sorted_items:
+        if not info.get('success') or not info.get('all_high'):
+            continue
+        fen = _square_results_to_fen(info.get('square_results') or {})
+        t = float(info.get('time_s', 0.0))
+        if prev_fen is None or fen != prev_fen:
+            segments.append({
+                'fen': fen,
+                'first_frame': key,
+                'last_frame': key,
+                'first_time_s': t,
+                'last_time_s': t,
+                'count': 1,
+            })
+            prev_fen = fen
+        else:
+            segments[-1]['last_frame'] = key
+            segments[-1]['last_time_s'] = t
+            segments[-1]['count'] = int(segments[-1]['count']) + 1
+    return segments
+
+
+# New helpers: determine bottom color from FEN placement and build annotated PGN
+
+def _infer_bottom_color_from_placement(placement: str) -> str:
+    """Return 'white' if bottom rank contains mostly uppercase pieces, else 'black'."""
+    try:
+        ranks = placement.split('/')
+        if len(ranks) != 8:
+            return 'white'
+        r1_expanded = _expand_rank(ranks[7])
+        upper = sum(1 for ch in r1_expanded if isinstance(ch, str) and ch.isalpha() and ch.isupper())
+        lower = sum(1 for ch in r1_expanded if isinstance(ch, str) and ch.isalpha() and ch.islower())
+        return 'white' if upper >= lower else 'black'
+    except Exception:
+        return 'white'
+
+
+def _sanitize_pgn_comment(text: str) -> str:
+    """PGN comments are delimited by braces. Replace any braces in text to avoid nesting issues."""
+    return text.replace('{', '(').replace('}', ')')
+
+
+def _collect_captions_for_range(caption_intervals: List[Tuple[float, float, str]], start_s: float, end_s: float) -> List[str]:
+    out: List[str] = []
+    if start_s is None or end_s is None:
+        return out
+    for cs, ce, txt in caption_intervals:
+        if ce > start_s and cs < end_s:
+            out.append(txt)
+    return out
+
+
+def _write_pgn_with_annotations(
+    start_placement: str,
+    moves: List[Dict[str, object]],
+    our_color_letter: str,
+    start_time_s: float,
+    end_time_s: float,
+    caption_intervals: List[Tuple[float, float, str]],
+    out_path: str,
+) -> None:
+    """Construct a PGN from detected moves and annotate our moves with intersecting captions."""
+    # Initialize board from placement; side to move is always white at start of a new game in this pipeline
+    full_fen = _piece_placement_to_full_fen(start_placement, 'w', 1)
+    board = chess.Board(full_fen, chess960=True)
+
+    game = chess.pgn.Game()
+    game.setup(board)
+    game.headers["SetUp"] = "1"
+    game.headers["FEN"] = full_fen
+
+    node = game
+
+    # Precompute indices of our moves in the list and time ranges per our move
+    our_indices: List[int] = [i for i, m in enumerate(moves) if m.get('mover') == our_color_letter]
+
+    def _time_range_for_our_move(idx_in_moves: int, idx_in_ours: int) -> Tuple[float, float]:
+        # Start at previous our move's appearance, else at game start
+        if idx_in_ours == 0:
+            start = float(start_time_s)
+        else:
+            prev_our = our_indices[idx_in_ours - 1]
+            start = float(moves[prev_our].get('to_time_s', start_time_s))
+        # End when this our move first appears on board
+        end = float(moves[idx_in_moves].get('to_time_s', end_time_s))
+        # Clamp
+        if end < start:
+            end = start
+        return start, end
+
+    for i, m in enumerate(moves):
+        uci = m.get('uci') or ''
+        to_fen = m.get('to_fen') or ''
+        mv_obj: Optional[chess.Move] = None
+        # Prefer provided UCI
+        if isinstance(uci, str) and uci:
+            try:
+                mv_obj = board.parse_uci(uci)
+            except Exception:
+                mv_obj = None
+        # Fallback: search by target placement
+        if mv_obj is None and isinstance(to_fen, str) and to_fen:
+            target = to_fen
+            for mv in board.legal_moves:
+                test = board.copy()
+                test.push(mv)
+                if test.board_fen() == target:
+                    mv_obj = mv
+                    break
+        if mv_obj is None:
+            # Stop if we cannot reconcile the move
+            break
+        node = node.add_main_variation(mv_obj)
+        board.push(mv_obj)
+
+        # If this move is ours, attach captions as a PGN comment
+        if i in our_indices:
+            idx_in_ours = our_indices.index(i)
+            start_s, end_s = _time_range_for_our_move(i, idx_in_ours)
+            texts = _collect_captions_for_range(caption_intervals, start_s, end_s)
+            if texts:
+                merged = ' '.join(t.strip() for t in texts if isinstance(t, str) and t.strip())
+                if merged:
+                    node.comment = _sanitize_pgn_comment(merged)
+
+    with open(out_path, 'w', encoding='utf-8') as f:
+        print(game, file=f)
+
+
 _PIECE_IMG_CACHE: Dict[Tuple[str, int], np.ndarray] = {}
 
 
@@ -201,11 +480,12 @@ def _overlay_bgra(dst_bgr: np.ndarray, src_bgra: np.ndarray, x: int, y: int) -> 
         roi[:] = src_roi
 
 
-def _render_predicted_board_image(results: Dict[str, Tuple[str, float]], size: int = 512, show_confidences: bool = False) -> np.ndarray:
+def _render_predicted_board_image(results: Dict[str, Tuple[str, float]], size: int = 512, show_confidences: bool = False, confidence_threshold: Optional[float] = None) -> np.ndarray:
     """
     Render the predicted board using piece assets from img2chess/chess_pieces/modern.
     Falls back to letter rendering if an asset is missing.
     Optionally overlays per-square confidence scores.
+    Confidence text is colored red when below threshold, green when above/equal.
     """
     img = np.zeros((size, size, 3), dtype=np.uint8)
     # Colors similar to chess.com green theme
@@ -232,7 +512,6 @@ def _render_predicted_board_image(results: Dict[str, Tuple[str, float]], size: i
                 continue
             label, conf = label_conf
             if label == 'empty':
-                # Still may overlay confidence if requested
                 pass
 
             # Try asset-based rendering first
@@ -242,7 +521,7 @@ def _render_predicted_board_image(results: Dict[str, Tuple[str, float]], size: i
             y0 = r * square + (square - piece_size) // 2
             if piece_img is not None and label != 'empty':
                 _overlay_bgra(img, piece_img, x0, y0)
-                
+
             # Fallback to letter rendering
             if label != 'empty':
                 piece_char = _label_to_piece_char(label)
@@ -273,7 +552,12 @@ def _render_predicted_board_image(results: Dict[str, Tuple[str, float]], size: i
                 for dx in (-1, 1):
                     for dy in (-1, 1):
                         cv2.putText(img, conf_text, (cx + dx, cy + dy), font, conf_scale, (0, 0, 0), conf_thickness, lineType=cv2.LINE_AA)
-                cv2.putText(img, conf_text, (cx, cy), font, conf_scale, (255, 255, 255), conf_thickness, lineType=cv2.LINE_AA)
+                # Choose color based on threshold (BGR)
+                if confidence_threshold is not None:
+                    color = (0, 0, 255) if conf < confidence_threshold else (0, 255, 0)
+                else:
+                    color = (255, 255, 255)
+                cv2.putText(img, conf_text, (cx, cy), font, conf_scale, color, conf_thickness, lineType=cv2.LINE_AA)
 
     return img
 
@@ -296,6 +580,11 @@ def process_video_folder(
     Returns per-frame results dict.
     """
     os.makedirs(output_dir, exist_ok=True)
+    failed_dir = os.path.join(output_dir, 'failed')
+    os.makedirs(failed_dir, exist_ok=True)
+    # Directory to save low-confidence square crops for this video
+    lowconf_squares_dir = os.path.join(output_dir, 'low_conf_squares')
+    os.makedirs(lowconf_squares_dir, exist_ok=True)
     detector = CleanEdgeBasedDetector(detector_config_path)
 
     # Prepare frame list (support .jpg and .png)
@@ -312,15 +601,26 @@ def process_video_folder(
         fpath = os.path.join(frames_dir, fname)
         img = cv2.imread(fpath)
         if img is None:
+            reason_text = "read_error: could not read image"
+            placeholder = np.zeros((512, 512, 3), dtype=np.uint8)
+            header = f"Frame: {fname}"
+            lines = ["EXTRACTION FAILED", header, reason_text]
+            y = 40
+            for line in lines:
+                cv2.putText(placeholder, line, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, lineType=cv2.LINE_AA)
+                y += 30
+            cv2.imwrite(os.path.join(failed_dir, fname), placeholder)
             per_frame[fname] = {
                 "success": False,
-                "reason": "read_error",
+                "reason": reason_text,
                 "process_time_s": 0.0,
                 "inherited_corners": False,
                 "min_confidence": 0.0,
                 "max_confidence": 0.0,
                 "similarity_score": None,
                 "square_changed_mask": None,
+                "square_results": {},
+                "low_confidence_squares": [],
             }
             continue
 
@@ -329,6 +629,7 @@ def process_video_folder(
         inherited_corners = False
         similarity_score: Optional[float] = None
         square_changed_mask: Optional[List[List[int]]] = None
+        failure_chain: List[str] = []
 
         # If we have previous corners, try reuse by comparing boards
         if last_corners is not None and last_board is not None:
@@ -339,29 +640,52 @@ def process_video_folder(
                     board_img = board_try
                     corners_used = last_corners
                     inherited_corners = True
+                else:
+                    failure_chain.append("similarity_below_threshold")
+            else:
+                failure_chain.append("extract_with_previous_corners_failed")
 
         # Fallback to detection
         if board_img is None:
-            board_img, corners = detector.detect_board_and_corners(img)
-            corners_used = corners
+            detected_board_img, detected_corners = detector.detect_board_and_corners(img)
+            board_img = detected_board_img
+            corners_used = detected_corners
             inherited_corners = False
+            if board_img is None and detected_corners is None:
+                failure_chain.append("detect_board_and_corners_failed")
+            elif board_img is None:
+                failure_chain.append("detect_board_failed")
+            elif detected_corners is None:
+                failure_chain.append("detect_corners_failed")
 
         if board_img is None or corners_used is None:
+            # Annotate and save failure image
+            fail_img = img if img is not None else np.zeros((512, 512, 3), dtype=np.uint8)
+            reason_str = " -> ".join(failure_chain) if failure_chain else "detect_failed"
+            y = 40
+            cv2.putText(fail_img, "EXTRACTION FAILED", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2, lineType=cv2.LINE_AA)
+            y += 35
+            cv2.putText(fail_img, f"Frame: {fname}", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2, lineType=cv2.LINE_AA)
+            y += 30
+            cv2.putText(fail_img, f"Reason: {reason_str}", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, lineType=cv2.LINE_AA)
+            cv2.imwrite(os.path.join(failed_dir, fname), fail_img)
+
             per_frame[fname] = {
                 "success": False,
-                "reason": "detect_failed",
+                "reason": reason_str,
                 "process_time_s": float(time.perf_counter() - start_t),
                 "inherited_corners": False,
                 "min_confidence": 0.0,
                 "max_confidence": 0.0,
                 "similarity_score": similarity_score,
                 "square_changed_mask": square_changed_mask,
+                "square_results": {},
+                "low_confidence_squares": [],
             }
             continue
 
         # Classify 64 squares via async service (partial if inherited)
         if inherited_corners and last_results is not None and square_changed_mask is not None:
-            # Derive square names to classify: changed OR previously low confidence
             changed_set: Set[str] = set()
             for r in range(8):
                 for c in range(8):
@@ -379,7 +703,6 @@ def process_video_folder(
                 previous_results=last_results,
             )
         else:
-            # Full classification
             results, all_high = classify_board_async(board_img, min_square_confidence, classifier=classifier)
 
         # Compute confidence stats
@@ -389,7 +712,6 @@ def process_video_folder(
 
         # Save side-by-side image and classification if all squares high confidence
         save_ok = False
-        # Render predicted board on the right, extracted board on the left
         h, w = board_img.shape[:2]
         if all_high:
             pred_img = _render_predicted_board_image(results, size=max(h, w), show_confidences=False)
@@ -399,12 +721,26 @@ def process_video_folder(
             cv2.imwrite(out_path, combined)
             save_ok = True
         else:
-            # Low confidence: still save, with confidences overlayed
-            pred_img = _render_predicted_board_image(results, size=max(h, w), show_confidences=True)
+            # Low confidence: still save, with confidences overlayed (red/green by threshold)
+            pred_img = _render_predicted_board_image(results, size=max(h, w), show_confidences=True, confidence_threshold=min_square_confidence)
             pred_img = cv2.resize(pred_img, (w, h), interpolation=cv2.INTER_AREA)
             combined = np.concatenate([board_img, pred_img], axis=1)
             out_path = os.path.join(output_dir, f"board_lowconf_{fname}")
             cv2.imwrite(out_path, combined)
+
+            # Save crops of low-confidence squares for debugging/analysis
+            try:
+                extractor = SquareExtractor(square_size=224)
+                squares_map = extractor.extract_squares(board_img)
+                low_conf_squares = [name for name, (_, conf) in results.items() if conf < min_square_confidence]
+                base = os.path.splitext(fname)[0]
+                for sq_name in low_conf_squares:
+                    if sq_name in squares_map:
+                        sq_img = squares_map[sq_name]
+                        cv2.imwrite(os.path.join(lowconf_squares_dir, f"{base}_{sq_name}.png"), sq_img)
+            except Exception:
+                # Do not crash on debugging artifact generation
+                pass
 
         elapsed = float(time.perf_counter() - start_t)
         per_frame[fname] = {
@@ -418,6 +754,9 @@ def process_video_folder(
             "process_time_s": elapsed,
             "similarity_score": similarity_score,
             "square_changed_mask": square_changed_mask,
+            # Persist square-level results for downstream aggregation/visualization
+            "square_results": {k: [v[0], float(v[1])] for k, v in results.items()} if results else {},
+            "low_confidence_squares": [name for name, (_, conf) in results.items() if conf < min_square_confidence],
         }
 
         # Update cache
@@ -487,6 +826,12 @@ def process_all_videos(
         times = [float(r.get('process_time_s', 0.0)) for r in frames if 'process_time_s' in r]
         min_confs = [float(r.get('min_confidence', 0.0)) for r in frames if r.get('success')]
         max_confs = [float(r.get('max_confidence', 0.0)) for r in frames if r.get('success')]
+        # Aggregate failure reasons
+        failure_reasons: Dict[str, int] = {}
+        for r in frames:
+            if not r.get('success'):
+                reason_key = r.get('reason', 'unknown')
+                failure_reasons[reason_key] = failure_reasons.get(reason_key, 0) + 1
         video_stats = {
             'video': vname,
             'frames': num_frames,
@@ -496,17 +841,16 @@ def process_all_videos(
             'avg_process_time_s': (float(sum(times)) / len(times)) if times else 0.0,
             'avg_min_confidence': (float(sum(min_confs)) / len(min_confs)) if min_confs else 0.0,
             'avg_max_confidence': (float(sum(max_confs)) / len(max_confs)) if max_confs else 0.0,
+            'failure_reasons': failure_reasons,
         }
         with open(os.path.join(out_dir, 'video_stats.json'), 'w') as f:
             json.dump(video_stats, f, indent=2)
-        # Combined per-video report including per-frame records and summary
         with open(os.path.join(out_dir, 'video_summary.json'), 'w') as f:
             json.dump({
                 'summary': video_stats,
                 'frames': res,
             }, f, indent=2)
 
-        # Print completion notice
         print(f"Finished video: {vname} | frames={num_frames}, success={num_success}, saved={num_saved}")
         return vname, res
 
@@ -523,4 +867,348 @@ def process_all_videos(
                 # Log error and continue
                 print(f"Error processing video {v}: {e}")
 
-    return results 
+    return results
+
+
+# New high-level method: process a single YouTube video by sampling interval
+def process_youtube_video_by_interval(
+    youtube_url: str,
+    interval_seconds: float,
+    output_root: str,
+    detector_config_path: str = os.path.join('img2chess', 'detector_config.yaml'),
+    similarity_threshold: float = 0.75,
+    min_square_confidence: float = 0.95,
+    classifier_config: Optional[Dict] = None,
+    min_frames_between_resets: int = 10,
+) -> Dict:
+    """
+    Download a YouTube video and sample frames at the given interval, extracting boards.
+
+    - Skips frames that fail extraction or have low confidence squares
+    - Segments into multiple games if a position returns to the original position
+    - Streams frames without saving them to disk; a producer thread prefetches ~20 frames
+
+    Returns a dict containing per-game segmentation and per-frame metadata.
+    """
+    os.makedirs(output_root, exist_ok=True)
+
+    # Use FrameAgent to manage video download and metadata
+    frame_agent = FrameAgent()
+    video_id = frame_agent.extract_video_id(youtube_url) or 'video'
+    video_dir = os.path.join(output_root, video_id)
+    os.makedirs(video_dir, exist_ok=True)
+
+    # Reuse existing downloaded video if present; else download into video_dir
+    local_video_path = None
+    for ext in ['mp4', 'webm', 'mkv', 'avi']:
+        candidate = os.path.join(video_dir, f"temp_video_{video_id}.{ext}")
+        if os.path.exists(candidate):
+            local_video_path = candidate
+            break
+    if not local_video_path:
+        try:
+            local_video_path = frame_agent._download_video(youtube_url, video_dir)  # type: ignore[attr-defined]
+        except Exception:
+            local_video_path = None
+    if not local_video_path or not os.path.exists(local_video_path):
+        raise RuntimeError("Failed to download video for processing.")
+
+    # Determine timestamps based on requested sampling interval
+    video_info = frame_agent.get_video_info(youtube_url) or {}
+    duration = float(video_info.get('duration', 0.0))
+    if duration <= 0.0:
+        # Fallback: try OpenCV probe
+        cap_probe = cv2.VideoCapture(local_video_path)
+        if cap_probe.isOpened():
+            fps = cap_probe.get(cv2.CAP_PROP_FPS) or 0.0
+            frame_count = cap_probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+            duration = float(frame_count / fps) if fps > 0 else 0.0
+        cap_probe.release()
+    if duration <= 0.0:
+        raise RuntimeError("Could not determine video duration")
+
+    timestamps: List[float] = []
+    t = 0.0
+    while t <= duration:
+        timestamps.append(t)
+        t += float(interval_seconds)
+
+    # Instantiate classifier once
+    classifier: Optional[AsyncPieceClassifierService] = None
+    if classifier_config is not None:
+        cfg = dict(classifier_config)
+        model_path = cfg.get('model_path')
+        device = cfg.get('device')
+        if isinstance(device, str) and device.lower() == 'auto':
+            device = None
+        max_batch_size = cfg.get('max_batch_size', 256)
+        batch_timeout_s = cfg.get('batch_timeout_s', 0.010)
+        classifier = get_async_classifier(
+            model_path=model_path,
+            device=device,
+            max_batch_size=int(max_batch_size),
+            batch_timeout_s=float(batch_timeout_s),
+        )
+    else:
+        classifier = get_async_classifier()
+
+    # Prepare detector and per-frame results accumulator
+    detector = CleanEdgeBasedDetector(detector_config_path)
+    per_frame: Dict[str, Dict] = {}
+
+    # Streaming: use a producer thread to prefetch frames into a bounded queue
+    queue_size = 20
+    q: "Queue[Optional[Tuple[str, float, np.ndarray]]]" = Queue(maxsize=queue_size)
+    stop_sentinel: Optional[Tuple[str, float, np.ndarray]] = None  # use None to mark end
+
+    def _producer(video_path: str, ts_list: List[float]) -> None:
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                # signal failure
+                q.put(None)
+                return
+            # Prefer frame-accurate seeking by frames
+            fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            for ts in ts_list:
+                if fps > 0:
+                    frame_idx = int(round(ts * fps))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                else:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+                ok, frame_bgr = cap.read()
+                key = f"{video_id}_{ts:.2f}s"
+                if ok and frame_bgr is not None:
+                    q.put((key, ts, frame_bgr))
+                else:
+                    # put a placeholder to allow consumer to continue
+                    q.put((key, ts, None))
+            cap.release()
+        finally:
+            q.put(stop_sentinel)
+
+    prod_thread = threading.Thread(target=_producer, args=(local_video_path, timestamps), daemon=True)
+    prod_thread.start()
+
+    # Progress bar
+    try:
+        pbar = tqdm(total=len(timestamps), desc=f"Processing frames ({video_id})", dynamic_ncols=True)
+    except Exception:
+        pbar = None
+
+    # Process frames as they arrive
+    last_corners: Optional[np.ndarray] = None
+    last_board: Optional[np.ndarray] = None
+    last_results: Optional[Dict[str, Tuple[str, float]]] = None
+    attempted = 0
+
+    while True:
+        item = q.get()
+        if item is None:
+            break
+        key, ts, frame = item
+        if frame is None:
+            # record failure and continue
+            per_frame[key] = {
+                'success': False,
+                'reason': 'read_error: could not decode frame',
+                'process_time_s': 0.0,
+                'inherited_corners': False,
+                'min_confidence': 0.0,
+                'max_confidence': 0.0,
+                'similarity_score': None,
+                'square_changed_mask': None,
+                'square_results': {},
+                'low_confidence_squares': [],
+                'time_s': float(ts),
+            }
+            attempted += 1
+            if pbar is not None:
+                pbar.update(1)
+            continue
+
+        attempted += 1
+        start_t = time.perf_counter()
+        img = frame
+
+        board_img = None
+        corners_used = None
+        inherited_corners = False
+        similarity_score: Optional[float] = None
+        square_changed_mask: Optional[List[List[int]]] = None
+
+        # Try reuse previous corners if possible
+        if last_corners is not None and last_board is not None:
+            board_try = detector.extract_board_with_corners(img, last_corners)
+            if board_try is not None:
+                square_changed_mask, similarity_score = compute_square_change_mask(last_board, board_try)
+                if similarity_score is not None and similarity_score >= similarity_threshold:
+                    board_img = board_try
+                    corners_used = last_corners
+                    inherited_corners = True
+
+        # Fallback to detection
+        if board_img is None:
+            detected_board_img, detected_corners = detector.detect_board_and_corners(img)
+            board_img = detected_board_img
+            corners_used = detected_corners
+            inherited_corners = False
+
+        if board_img is None or corners_used is None:
+            per_frame[key] = {
+                'success': False,
+                'reason': 'detect_failed',
+                'process_time_s': float(time.perf_counter() - start_t),
+                'inherited_corners': False,
+                'min_confidence': 0.0,
+                'max_confidence': 0.0,
+                'similarity_score': similarity_score,
+                'square_changed_mask': square_changed_mask,
+                'square_results': {},
+                'low_confidence_squares': [],
+                'time_s': float(ts),
+            }
+            continue
+
+        # Classify squares (partial if reusing corners)
+        if inherited_corners and last_results is not None and square_changed_mask is not None:
+            changed_set: Set[str] = set()
+            for r in range(8):
+                for c in range(8):
+                    if square_changed_mask[r][c] == 1:
+                        file_letter = chr(ord('a') + c)
+                        rank_num = 8 - r
+                        changed_set.add(f"{file_letter}{rank_num}")
+            low_conf_set: Set[str] = {name for name, (_, conf) in last_results.items() if conf < min_square_confidence}
+            reclassify_names: List[str] = sorted(changed_set | low_conf_set)
+            results, all_high = classify_board_async(
+                board_img,
+                min_square_confidence,
+                classifier=classifier,
+                squares_to_classify=reclassify_names,
+                previous_results=last_results,
+            )
+        else:
+            results, all_high = classify_board_async(board_img, min_square_confidence, classifier=classifier)
+
+        conf_values = [conf for (_, conf) in results.values()] if results else []
+        min_conf = float(min(conf_values)) if conf_values else 0.0
+        max_conf = float(max(conf_values)) if conf_values else 0.0
+
+        per_frame[key] = {
+            'success': True,
+            'all_high': all_high,
+            'saved': False,
+            'corners': corners_used.tolist() if corners_used is not None else None,
+            'inherited_corners': inherited_corners,
+            'min_confidence': min_conf,
+            'max_confidence': max_conf,
+            'process_time_s': float(time.perf_counter() - start_t),
+            'similarity_score': similarity_score,
+            'square_changed_mask': square_changed_mask,
+            'square_results': {k: [v[0], float(v[1])] for k, v in results.items()} if results else {},
+            'low_confidence_squares': [name for name, (_, conf) in results.items() if conf < min_square_confidence],
+            'time_s': float(ts),
+        }
+
+        # update caches
+        last_corners = corners_used
+        last_board = board_img
+        last_results = results
+
+        if pbar is not None:
+            pbar.update(1)
+
+    # Build per-frame timeline sorted by timestamp
+    sorted_items = sorted(per_frame.items(), key=lambda kv: (kv[1].get('time_s', float('inf'))))
+
+    # Build distinct position segments and persist a positions debug file
+    segments = _compress_positions(sorted_items)
+    positions_debug = {
+        'video_id': video_id,
+        'url': youtube_url,
+        'interval_seconds': float(interval_seconds),
+        'positions': segments,
+    }
+    with open(os.path.join(video_dir, 'positions_debug.json'), 'w') as f:
+        json.dump(positions_debug, f, indent=2)
+
+    # Segment games by valid start positions and compute moves
+    games: List[Dict[str, object]] = []
+    idx = 0
+    game_index = 1
+    while idx < len(segments):
+        seg = segments[idx]
+        if not _is_valid_start_position(seg['fen']):
+            idx += 1
+            continue
+        # Start a game at this segment
+        start_seg = seg
+        moves: List[Dict[str, object]] = []
+        turn = 'w'  # white to move from a valid start position
+        fullmove = 1
+        j = idx + 1
+        last_seg = seg
+        while j < len(segments):
+            next_seg = segments[j]
+            if _is_valid_start_position(next_seg['fen']):
+                # next game begins; stop current game before this
+                break
+            # compute move from last_seg -> next_seg
+            move_info = _determine_move_between_placements(last_seg['fen'], next_seg['fen'], turn, fullmove)
+            moves.append({
+                'from_fen': last_seg['fen'],
+                'to_fen': next_seg['fen'],
+                'from_time_s': last_seg['first_time_s'],
+                'to_time_s': next_seg['first_time_s'],
+                'uci': move_info.get('uci', ''),
+                'san': move_info.get('san', ''),
+                'success': bool(move_info.get('success', False)),
+                'mover': turn,
+                'fullmove': int(fullmove),
+            })
+            # advance
+            last_seg = next_seg
+            # toggle turn and fullmove
+            if turn == 'w':
+                turn = 'b'
+            else:
+                turn = 'w'
+                fullmove += 1
+            j += 1
+
+        # Infer our color based on the bottom side at game start
+        our_color_word = _infer_bottom_color_from_placement(start_seg['fen'])
+        games.append({
+            'game_index': game_index,
+            'start_position': start_seg['fen'],
+            'start_time_s': start_seg['first_time_s'],
+            'end_position': last_seg['fen'],
+            'end_time_s': last_seg['last_time_s'],
+            'moves': moves,
+            'our_color': our_color_word,
+        })
+        game_index += 1
+        idx = j  # continue scanning from next start position
+
+    # NOTE: Caption extraction and PGN generation have been moved out of the
+    # video processing flow. Use reconstruct_game_tree.py after extraction to
+    # build a full PGN and optionally annotate it with captions.
+
+    # Persist results
+    summary = {
+        'video_id': video_id,
+        'url': youtube_url,
+        'interval_seconds': float(interval_seconds),
+        'frames_sampled': len(timestamps),
+        'games': games,
+    }
+
+    with open(os.path.join(video_dir, 'games.json'), 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    if pbar is not None:
+        pbar.close()
+
+    print(f"Processed video {video_id}: {len(games)} game(s)")
+    return summary 

@@ -1,27 +1,19 @@
 """
-img2chess - A Python library for extracting chess boards from images
-
-This library provides functionality to:
-1. Detect chess boards in images using computer vision techniques
-2. Extract the board region from the image
-3. Split the board into individual squares for piece recognition
+img2chess - Core implementation module
 """
 
-from .board_detector import ChessBoardDetector
-from .edge_based_board_detector import EdgeBasedChessBoardDetector
+# Expose core classes from this subpackage only
+from .clean_edge_detector import CleanEdgeBasedDetector
 from .square_extractor import SquareExtractor
+from .chess_piece_classifier import ChessPieceClassifier
+from .board_detector import ChessBoardDetector
 from .utils import visualize_board, save_squares
-from .fast_edge_detector import FastEdgeBasedDetector
-
-__version__ = "0.1.0"
-__author__ = "img2chess"
-__email__ = ""
 
 __all__ = [
-    "ChessBoardDetector",
-    "EdgeBasedChessBoardDetector",
-    "SquareExtractor", 
-    "visualize_board",
-    "save_squares",
-    "FastEdgeBasedDetector",
+	'CleanEdgeBasedDetector',
+	'SquareExtractor',
+	'ChessPieceClassifier',
+	'ChessBoardDetector',
+	'visualize_board',
+	'save_squares',
 ]

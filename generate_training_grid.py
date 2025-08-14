@@ -4,6 +4,7 @@ import random
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import argparse
 
 # Ensure we can import from this directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +69,64 @@ def generate_grid(
 
 
 if __name__ == "__main__":
-    # Default output to project root for convenience
-    default_output = os.path.join(os.path.dirname(SCRIPT_DIR), "training_grid_8x8.png")
-    generate_grid(output_path=default_output) 
+    parser = argparse.ArgumentParser(
+        description="Generate an NxN grid of random images from ChessPieceDataset."
+    )
+    parser.add_argument(
+        "-n",
+        "--n",
+        type=int,
+        default=8,
+        help="Grid size N for an NxN grid (default: 8)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        help="Output image path. Defaults to project root with name training_grid_NxN.png",
+    )
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=224,
+        help="Image size for generated samples (default: 224)",
+    )
+    parser.add_argument(
+        "--chess-pieces-dir",
+        type=str,
+        default="chess_pieces",
+        help="Directory containing chess piece assets (default: chess_pieces)",
+    )
+    parser.add_argument(
+        "--boards-dir",
+        type=str,
+        default="boards",
+        help="Directory containing board assets (default: boards)",
+    )
+    parser.add_argument(
+        "--no-augment",
+        action="store_true",
+        help="Disable data augmentation (enabled by default)",
+    )
+
+    args = parser.parse_args()
+
+    if args.n < 1:
+        raise SystemExit("--n must be >= 1")
+
+    n = args.n
+    default_output = os.path.join(
+        os.path.dirname(SCRIPT_DIR), f"training_grid_{n}x{n}.png"
+    )
+    output_path = args.output or default_output
+
+    generate_grid(
+        output_path=output_path,
+        rows=n,
+        cols=n,
+        image_size=args.image_size,
+        augment=not args.no_augment,
+        chess_pieces_dir=args.chess_pieces_dir,
+        boards_dir=args.boards_dir,
+    ) 

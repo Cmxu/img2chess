@@ -126,7 +126,12 @@ class CleanEdgeBasedDetector:
                 adjusted_validation = self._validate_corner_geometry_detailed(adjusted_corners_result, valid_square_side_length)
                 if adjusted_validation['violation_count'] < corner_validation['violation_count']:
                     corners = adjusted_corners_result
-        
+
+        # Final strict validation: if corners cannot form a valid 8x8 square, return None
+        final_validation = self._validate_corner_geometry_detailed(corners, valid_square_side_length)
+        if final_validation['has_violations']:
+            return None
+
         # Extract and return the board using final corners
         board = self._extract_board(image, corners)
         return board
@@ -186,6 +191,12 @@ class CleanEdgeBasedDetector:
                 adjusted_validation = self._validate_corner_geometry_detailed(adjusted_corners_result, valid_square_side_length)
                 if adjusted_validation['violation_count'] < corner_validation['violation_count']:
                     corners = adjusted_corners_result
+
+        # Final strict validation: if corners cannot form a valid 8x8 square, return None
+        final_validation = self._validate_corner_geometry_detailed(corners, valid_square_side_length)
+        if final_validation['has_violations']:
+            return None, None
+
         board = self._extract_board(image, corners)
         return board, corners.astype(np.float32)
 

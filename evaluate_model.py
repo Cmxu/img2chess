@@ -23,8 +23,11 @@ def load_model(model_path="chess_piece_classifier.pth", device='cpu'):
     # Load checkpoint
     checkpoint = torch.load(model_path, map_location=device)
     
-    # Create model
-    model = ChessPieceClassifier(num_classes=13, freeze_backbone=True)
+    # Determine model type if present
+    model_type = checkpoint.get('model_type', 'dinov2-small')
+    
+    # Create model consistent with checkpoint
+    model = ChessPieceClassifier(num_classes=13, freeze_backbone=True, model_type=model_type)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
@@ -34,7 +37,7 @@ def load_model(model_path="chess_piece_classifier.pth", device='cpu'):
     print(f"Model loaded successfully!")
     print(f"Classes: {class_names}")
     
-    return model, class_names
+    return model, class_names, model_type
 
 
 def evaluate_model(model, dataloader, class_names, device='cpu', save_wrong_images=False, wrong_images_dir=None):
@@ -126,6 +129,12 @@ def calculate_metrics(results, class_names):
     correct_predictions = predictions == labels
     avg_confidence_correct = confidences[correct_predictions].mean() if correct_predictions.sum() > 0 else 0
     avg_confidence_incorrect = confidences[~correct_predictions].mean() if (~correct_predictions).sum() > 0 else 0
+
+    # Min/Max confidence analysis
+    min_confidence_correct = confidences[correct_predictions].min() if correct_predictions.sum() > 0 else 0
+    max_confidence_correct = confidences[correct_predictions].max() if correct_predictions.sum() > 0 else 0
+    min_confidence_incorrect = confidences[~correct_predictions].min() if (~correct_predictions).sum() > 0 else 0
+    max_confidence_incorrect = confidences[~correct_predictions].max() if (~correct_predictions).sum() > 0 else 0
     
     return {
         'accuracy': accuracy,
@@ -134,6 +143,10 @@ def calculate_metrics(results, class_names):
         'classification_report': report,
         'avg_confidence_correct': avg_confidence_correct,
         'avg_confidence_incorrect': avg_confidence_incorrect,
+        'min_confidence_correct': min_confidence_correct,
+        'max_confidence_correct': max_confidence_correct,
+        'min_confidence_incorrect': min_confidence_incorrect,
+        'max_confidence_incorrect': max_confidence_incorrect,
         'total_samples': len(labels)
     }
 
@@ -221,6 +234,16 @@ def print_detailed_report(metrics, class_names):
     print(f"\nAverage Confidence:")
     print(f"  Correct predictions: {metrics['avg_confidence_correct']:.4f}")
     print(f"  Incorrect predictions: {metrics['avg_confidence_incorrect']:.4f}")
+
+    print(f"\nMin/Max Confidence:")
+    print(
+        f"  Correct predictions: min={metrics['min_confidence_correct']:.4f}, "
+        f"max={metrics['max_confidence_correct']:.4f}"
+    )
+    print(
+        f"  Incorrect predictions: min={metrics['min_confidence_incorrect']:.4f}, "
+        f"max={metrics['max_confidence_incorrect']:.4f}"
+    )
     
     print(f"\nPer-Class Accuracy:")
     for class_name, acc in metrics['class_accuracy'].items():
@@ -261,6 +284,10 @@ def save_results_to_csv(results, metrics, class_names, save_path='evaluation_res
         {'metric': 'overall_accuracy', 'value': metrics['accuracy']},
         {'metric': 'avg_confidence_correct', 'value': metrics['avg_confidence_correct']},
         {'metric': 'avg_confidence_incorrect', 'value': metrics['avg_confidence_incorrect']},
+        {'metric': 'min_confidence_correct', 'value': metrics['min_confidence_correct']},
+        {'metric': 'max_confidence_correct', 'value': metrics['max_confidence_correct']},
+        {'metric': 'min_confidence_incorrect', 'value': metrics['min_confidence_incorrect']},
+        {'metric': 'max_confidence_incorrect', 'value': metrics['max_confidence_incorrect']},
         {'metric': 'total_samples', 'value': metrics['total_samples']}
     ])
     
@@ -417,7 +444,7 @@ def main():
         device = args.device
     
     # Load model
-    model, class_names = load_model(args.model, device)
+    model, class_names, model_type = load_model(args.model, device)
     
     # Create evaluation dataset and dataloader
     print(f"Creating evaluation dataset with {args.samples} samples...")
@@ -426,7 +453,8 @@ def main():
         boards_dir="boards",
         image_size=224,
         samples_per_epoch=args.samples,
-        augment=False  # No augmentation for evaluation
+        augment=False,  # No augmentation for evaluation
+        model_type=model_type
     )
     
     eval_loader = DataLoader(

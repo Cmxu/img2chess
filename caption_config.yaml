@@ -1,0 +1,10 @@
+# Caption extraction configuration
+# Preferred languages in order
+languages:
+  - en
+
+# Where outputs (JSON/SRT) will be written
+output_root: test_frames/video_caption_extraction
+
+# Number of segments to print in console preview
+max_preview: 10 
