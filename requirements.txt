@@ -13,3 +13,5 @@ openpyxl>=3.0.0
 seaborn
 scikit-learn
 openpyxl
+scipy>=1.9.0
+accelerate>=0.20.0 

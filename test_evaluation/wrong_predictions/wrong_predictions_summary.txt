@@ -1,6 +1,0 @@
-WRONG PREDICTIONS SUMMARY
-==================================================
-
-Sample   557: True=  bq, Pred=  wq, Conf=0.881
-Sample   799: True=  bb, Pred=  wb, Conf=0.510
-Sample   856: True=  wb, Pred=  wn, Conf=0.433
